@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>CraftPanel — Minecraft Server Manager</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Press+Start+2P&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+/* ──────────── MINECRAFT TEXTURE TOKENS ──────────── */
+:root {
+  /* Overworld palette (default) */
+  --grass-top:        #5fa83b;
+  --grass-side-dark:  #3b6a23;
+  --grass-side-light: #7bc54e;
+  --dirt-1:           #79553a;
+  --dirt-2:           #6b4a32;
+  --dirt-3:           #8b6647;
+  --stone-1:          #7d7d7d;
+  --stone-2:          #6b6b6b;
+  --stone-3:          #919191;
+  --cobble-1:         #5b5b5b;
+  --cobble-2:         #888;
+  --plank-1:          #b58a52;
+  --plank-2:          #8b6235;
+  --sky-1:            #7cb7e8;
+  --sky-2:            #a3d0f0;
+
+  /* GUI accents */
+  --gui-bg:           #c6c6c6;
+  --gui-bg-dark:      #8b8b8b;
+  --gui-shadow:       #555555;
+  --gui-highlight:    #ffffff;
+  --gui-slot:         #8b8b8b;
+  --gui-slot-shadow:  #373737;
+  --gui-text:         #404040;
+  --gui-text-on-dark: #ffffff;
+  --gui-text-shadow:  #3f3f3f;
+
+  /* Status */
+  --status-online:    #55ff55;
+  --status-online-d:  #2da82d;
+  --status-offline:   #ff5555;
+  --status-offline-d: #aa2a2a;
+  --status-warn:      #ffaa00;
+  --status-info:      #5fa3e8;
+  --status-xp:        #80ff20;
+
+  /* Materials */
+  --diamond:          #5cdbd5;
+  --gold:             #fdc500;
+  --redstone:         #c41e1e;
+  --emerald:          #17dd62;
+  --lapis:            #1e4ab0;
+  --netherite:        #4a4040;
+
+  /* Density */
+  --density-pad: 16px;
+  --density-gap: 14px;
+  --density-row: 44px;
+}
+
+/* DENSITY MODES */
+[data-density="compact"] {
+  --density-pad: 10px;
+  --density-gap: 8px;
+  --density-row: 36px;
+}
+[data-density="loose"] {
+  --density-pad: 22px;
+  --density-gap: 20px;
+  --density-row: 56px;
+}
+
+/* THEMES */
+[data-theme="nether"] {
+  --grass-top:        #8b1a1a;
+  --grass-side-dark:  #4a0808;
+  --grass-side-light: #c52828;
+  --dirt-1:           #5a2018;
+  --dirt-2:           #3d1410;
+  --dirt-3:           #6f291e;
+  --stone-1:          #4a2222;
+  --stone-2:          #3a1818;
+  --stone-3:          #5a2c2c;
+  --sky-1:            #4a1010;
+  --sky-2:            #762020;
+  --gui-bg:           #6b3a3a;
+  --gui-bg-dark:      #4a2525;
+  --gui-shadow:       #2a1010;
+}
+[data-theme="end"] {
+  --grass-top:        #d4c8a4;
+  --grass-side-dark:  #5a4a2a;
+  --grass-side-light: #e8d8a8;
+  --dirt-1:           #2a1a3a;
+  --dirt-2:           #1a0e2a;
+  --dirt-3:           #3a2454;
+  --stone-1:          #c8b89a;
+  --stone-2:          #a89878;
+  --stone-3:          #ddc8a0;
+  --sky-1:            #1a0e2a;
+  --sky-2:            #2a1c44;
+  --gui-bg:           #6a5a8a;
+  --gui-bg-dark:      #4a3c66;
+}
+[data-theme="diamond"] {
+  --grass-top:        #5cdbd5;
+  --grass-side-dark:  #1a8e8a;
+  --grass-side-light: #88e8e2;
+  --dirt-1:           #2a4a78;
+  --dirt-2:           #1c3458;
+  --dirt-3:           #3c5e90;
+  --stone-1:          #8ec0d8;
+  --stone-2:          #6ea0bc;
+  --stone-3:          #aad8e8;
+  --sky-1:            #1c3458;
+  --sky-2:            #2e4a7a;
+  --gui-bg:           #88b0c8;
+  --gui-bg-dark:      #5a82a0;
+}
+
+/* ──────────── PIXEL FONTS ──────────── */
+@font-face {
+  font-family: 'Minecraftia';
+  src: local('VT323');
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #1a1a1a;
+  color: var(--gui-text);
+  font-family: 'VT323', 'Minecraftia', monospace;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  image-rendering: pixelated;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+}
+
+[data-font="modern"] body,
+[data-font="modern"] .pixel-font {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+button { font-family: inherit; }
+
+/* ──────────── PIXEL ART TEXTURES (CSS only) ──────────── */
+
+/* Grass top - tileable 16px texture */
+.tex-grass-top {
+  background-color: var(--grass-top);
+  background-image:
+    radial-gradient(circle at 2px 2px, var(--grass-side-light) 1px, transparent 1px),
+    radial-gradient(circle at 8px 6px, var(--grass-side-dark) 1px, transparent 1px),
+    radial-gradient(circle at 12px 10px, var(--grass-side-light) 1px, transparent 1px),
+    radial-gradient(circle at 5px 13px, var(--grass-side-dark) 1px, transparent 1px),
+    radial-gradient(circle at 14px 3px, var(--grass-side-light) 1px, transparent 1px);
+  background-size: 16px 16px;
+  image-rendering: pixelated;
+}
+
+/* Dirt block texture - tileable */
+.tex-dirt {
+  background-color: var(--dirt-1);
+  background-image:
+    radial-gradient(circle at 3px 3px, var(--dirt-3) 1px, transparent 1px),
+    radial-gradient(circle at 11px 5px, var(--dirt-2) 1px, transparent 1px),
+    radial-gradient(circle at 6px 9px, var(--dirt-3) 1px, transparent 1px),
+    radial-gradient(circle at 13px 12px, var(--dirt-2) 1px, transparent 1px),
+    radial-gradient(circle at 2px 14px, var(--dirt-3) 1px, transparent 1px);
+  background-size: 16px 16px;
+  image-rendering: pixelated;
+}
+
+/* Stone block - tileable noisy */
+.tex-stone {
+  background-color: var(--stone-1);
+  background-image:
+    radial-gradient(circle at 2px 2px, var(--stone-2) 1px, transparent 1px),
+    radial-gradient(circle at 9px 4px, var(--stone-3) 1px, transparent 1px),
+    radial-gradient(circle at 5px 8px, var(--stone-2) 1px, transparent 1px),
+    radial-gradient(circle at 13px 10px, var(--stone-3) 1px, transparent 1px),
+    radial-gradient(circle at 3px 12px, var(--stone-2) 1px, transparent 1px),
+    radial-gradient(circle at 11px 14px, var(--stone-3) 1px, transparent 1px);
+  background-size: 16px 16px;
+  image-rendering: pixelated;
+}
+
+/* Cobblestone - tileable */
+.tex-cobble {
+  background-color: var(--cobble-1);
+  background-image:
+    linear-gradient(45deg, var(--cobble-2) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--cobble-2) 25%, transparent 25%),
+    radial-gradient(circle at 4px 4px, var(--stone-2) 2px, transparent 2px),
+    radial-gradient(circle at 12px 12px, var(--stone-2) 2px, transparent 2px);
+  background-size: 8px 8px, 8px 8px, 16px 16px, 16px 16px;
+  image-rendering: pixelated;
+}
+
+/* Sky gradient with pixelated clouds */
+.tex-sky {
+  background:
+    linear-gradient(180deg, var(--sky-1) 0%, var(--sky-2) 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+/* ──────────── GUI 9-SLICE PANELS ──────────── */
+/* Classic Minecraft inventory panel: gray with beveled edges */
+.mc-panel {
+  background: var(--gui-bg);
+  border: 4px solid;
+  border-color: var(--gui-highlight) var(--gui-shadow) var(--gui-shadow) var(--gui-highlight);
+  position: relative;
+  padding: var(--density-pad);
+  box-shadow:
+    inset 4px 4px 0 0 rgba(255,255,255,0.15),
+    inset -4px -4px 0 0 rgba(0,0,0,0.1),
+    0 4px 0 0 rgba(0,0,0,0.4);
+  image-rendering: pixelated;
+}
+
+.mc-panel-dark {
+  background: #2a2a2a;
+  border: 4px solid;
+  border-color: #5a5a5a #0e0e0e #0e0e0e #5a5a5a;
+  color: #e0e0e0;
+}
+
+/* Inventory slot - dark inset square */
+.mc-slot {
+  background: var(--gui-slot);
+  border: 2px solid;
+  border-color: var(--gui-slot-shadow) var(--gui-highlight) var(--gui-highlight) var(--gui-slot-shadow);
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  image-rendering: pixelated;
+}
+
+.mc-slot:hover {
+  background: #aaa;
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+  z-index: 2;
+}
+
+/* Minecraft-style button */
+.mc-btn {
+  background: linear-gradient(180deg, #a0a0a0 0%, #888 50%, #6b6b6b 100%);
+  border: 2px solid;
+  border-color: #fff #000 #000 #fff;
+  color: var(--gui-text-on-dark);
+  text-shadow: 2px 2px 0 var(--gui-text-shadow);
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 22px;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  position: relative;
+  image-rendering: pixelated;
+  transition: filter 0.05s;
+  min-height: 44px;
+}
+.mc-btn:hover {
+  background: linear-gradient(180deg, #b8b8d0 0%, #a0a0c0 50%, #8080a0 100%);
+  border-color: #ffffaa #000 #000 #ffffaa;
+  color: #ffffaa;
+}
+.mc-btn:active {
+  border-color: #000 #fff #fff #000;
+  transform: translateY(1px);
+}
+.mc-btn[disabled] {
+  background: linear-gradient(180deg, #555 0%, #444 100%);
+  color: #888;
+  cursor: not-allowed;
+  border-color: #555 #222 #222 #555;
+}
+
+.mc-btn-green {
+  background: linear-gradient(180deg, #6cd64c 0%, #4ba032 50%, #357a22 100%);
+  border-color: #9bff7c #1a4010 #1a4010 #9bff7c;
+}
+.mc-btn-green:hover {
+  background: linear-gradient(180deg, #8cf06c 0%, #6bc042 50%, #459a32 100%);
+  border-color: #ffff7c #1a4010 #1a4010 #ffff7c;
+  color: #ffffaa;
+}
+.mc-btn-red {
+  background: linear-gradient(180deg, #ee5555 0%, #c63232 50%, #8a1a1a 100%);
+  border-color: #ff9999 #4a0a0a #4a0a0a #ff9999;
+}
+.mc-btn-red:hover {
+  background: linear-gradient(180deg, #ff7575 0%, #d64242 50%, #aa2a2a 100%);
+  border-color: #ffff7c #4a0a0a #4a0a0a #ffff7c;
+  color: #ffffaa;
+}
+.mc-btn-blue {
+  background: linear-gradient(180deg, #5fa3e8 0%, #3a82c8 50%, #2a5a98 100%);
+  border-color: #99d0ff #103048 #103048 #99d0ff;
+}
+
+.mc-btn-sm {
+  font-size: 18px;
+  padding: 4px 10px;
+  min-height: 32px;
+}
+
+/* Pixel text shadow */
+.pixel-shadow {
+  text-shadow: 2px 2px 0 var(--gui-text-shadow);
+}
+[data-font="modern"] .pixel-shadow {
+  text-shadow: none;
+}
+
+/* Headers in Minecraft GUI style */
+.mc-title {
+  color: #404040;
+  font-size: 32px;
+  letter-spacing: 0.05em;
+}
+.mc-title-light {
+  color: #ffffff;
+  text-shadow: 3px 3px 0 #3f3f3f;
+}
+[data-font="modern"] .mc-title { font-size: 22px; font-weight: 700; letter-spacing: 0; }
+
+/* Progress bar (XP bar style) */
+.mc-bar {
+  height: 14px;
+  background: #2a2a2a;
+  border: 2px solid;
+  border-color: #1a1a1a #555 #555 #1a1a1a;
+  position: relative;
+  image-rendering: pixelated;
+}
+.mc-bar-fill {
+  height: 100%;
+  background: var(--status-xp);
+  position: relative;
+  transition: width 0.3s steps(20);
+}
+.mc-bar-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 50% 0;
+  background: rgba(255,255,255,0.3);
+}
+
+/* Hearts / status indicators */
+.mc-heart {
+  display: inline-block;
+  width: 18px;
+  height: 16px;
+  background:
+    radial-gradient(circle at 5px 5px, #ff5555 4px, transparent 4px),
+    radial-gradient(circle at 13px 5px, #ff5555 4px, transparent 4px),
+    linear-gradient(180deg, transparent 50%, #ff5555 50%);
+  filter: drop-shadow(1px 1px 0 #000);
+  margin: 0 1px;
+}
+
+/* Pixel border helper */
+.pixel-border {
+  border-style: solid;
+  border-width: 4px;
+  image-rendering: pixelated;
+}
+
+/* Status dot */
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  vertical-align: middle;
+  box-shadow: 1px 1px 0 #000;
+}
+.status-dot.online  { background: var(--status-online); }
+.status-dot.offline { background: var(--status-offline); }
+.status-dot.warn    { background: var(--status-warn); }
+.status-dot.starting { background: var(--status-warn); animation: blink 1s steps(2) infinite; }
+
+@keyframes blink {
+  50% { opacity: 0.3; }
+}
+
+/* Scrollbars */
+.mc-scroll::-webkit-scrollbar { width: 16px; }
+.mc-scroll::-webkit-scrollbar-track {
+  background: #2a2a2a;
+  border: 2px solid #1a1a1a;
+}
+.mc-scroll::-webkit-scrollbar-thumb {
+  background: #888;
+  border: 2px solid;
+  border-color: #fff #000 #000 #fff;
+}
+
+/* App layout */
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Pixel particles (for TNT flash, etc.) */
+@keyframes flash {
+  0%, 100% { background: transparent; }
+  10% { background: rgba(255, 200, 0, 0.7); }
+  20% { background: rgba(255, 100, 0, 0.4); }
+}
+.tnt-flash { animation: flash 0.4s steps(8); }
+
+/* Cloud animation */
+@keyframes cloudDrift {
+  from { transform: translateX(-100px); }
+  to   { transform: translateX(calc(100vw + 100px)); }
+}
+
+/* Prevent text selection in pixel UI feel */
+.mc-btn, .mc-slot, .mc-title { user-select: none; }
+
+/* Hover glow on important items */
+@keyframes enchantGlow {
+  0%, 100% { filter: brightness(1) drop-shadow(0 0 0 transparent); }
+  50% { filter: brightness(1.3) drop-shadow(0 0 4px #c84cff); }
+}
+.enchanted { animation: enchantGlow 2s ease-in-out infinite; }
+
+/* Container helpers */
+.flex { display: flex; }
+.col { flex-direction: column; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: var(--density-gap); }
+.gap-lg { gap: 24px; }
+.flex-1 { flex: 1; }
+.center { align-items: center; justify-content: center; }
+.between { justify-content: space-between; }
+.items-center { align-items: center; }
+
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<!-- Pinned React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="primitives.jsx"></script>
+<script type="text/babel" src="screens.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+
+<script>
+// Initial defaults — host rewrites this block on tweak changes.
+window.TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "overworld",
+  "font": "pixel",
+  "density": "compact",
+  "animations": true
+}/*EDITMODE-END*/;
+</script>
+
+</body>
+</html>
