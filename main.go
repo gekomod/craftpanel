@@ -1,422 +1,994 @@
 package main
 
 import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"math/rand"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+// ── Config ────────────────────────────────────────────────────────────────────
+
+type Config struct {
+	Listen  string         `json:"listen"`
+	Servers []ServerConfig `json:"servers"`
+}
+
+type ServerConfig struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Directory    string   `json:"directory"`
+	Jar          string   `json:"jar"`
+	JavaArgs     []string `json:"java_args"`
+	Port         int      `json:"port"`
+	RCONPort     int      `json:"rcon_port"`
+	RCONPassword string   `json:"rcon_password"`
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type ServerStatus string
+
+const (
+	StatusOnline   ServerStatus = "online"
+	StatusOffline  ServerStatus = "offline"
+	StatusStarting ServerStatus = "starting"
+	StatusStopping ServerStatus = "stopping"
+)
 
 type Server struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	MOTD       string  `json:"motd"`
-	Icon       string  `json:"icon"`
-	Version    string  `json:"version"`
-	Status     string  `json:"status"`
-	Players    int     `json:"players"`
-	MaxPlayers int     `json:"maxPlayers"`
-	CPU        float64 `json:"cpu"`
-	RAM        float64 `json:"ram"`
-	RAMMax     float64 `json:"ramMax"`
-	TPS        float64 `json:"tps"`
-	Uptime     string  `json:"uptime"`
-	IP         string  `json:"ip"`
-	Type       string  `json:"type"`
-	Plugins    int     `json:"plugins"`
-	Mods       int     `json:"mods"`
-	World      string  `json:"world"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	Status     ServerStatus `json:"status"`
+	Version    string       `json:"version"`
+	Players    int          `json:"players"`
+	MaxPlayers int          `json:"max_players"`
+	CPU        float64      `json:"cpu"`
+	RAM        int64        `json:"ram"`
+	RAMMax     int64        `json:"ram_max"`
+	Uptime     int64        `json:"uptime"`
+	Port       int          `json:"port"`
 }
 
 type Player struct {
-	Name     string `json:"name"`
-	UUID     string `json:"uuid"`
-	Op       bool   `json:"op"`
-	Ping     int    `json:"ping"`
-	Playtime string `json:"playtime"`
-	Joined   string `json:"joined"`
-	Skin     string `json:"skin"`
-	World    string `json:"world"`
-	Status   string `json:"status"`
+	Name   string `json:"name"`
+	Online bool   `json:"online"`
+	World  string `json:"world"`
 }
 
 type Plugin struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
-	Author  string `json:"author"`
 	Enabled bool   `json:"enabled"`
-	Desc    string `json:"desc"`
-	Icon    string `json:"icon"`
 }
 
 type Backup struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Size    string `json:"size"`
-	Created string `json:"created"`
-	Auto    bool   `json:"auto"`
-	Status  string `json:"status"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	CreatedAt string `json:"created_at"`
 }
 
 type ConsoleLine struct {
-	T   string `json:"t"`
-	Lvl string `json:"lvl"`
-	Txt string `json:"txt"`
-	Col string `json:"col"`
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
 }
 
-type CommandRequest struct {
-	Command string `json:"command"`
+type FileEntry struct {
+	Name    string `json:"name"`
+	IsDir   bool   `json:"is_dir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"mod_time"`
 }
 
-type ActionRequest struct {
-	Action string `json:"action"` // start | stop | restart | kill
+// ── Managed Server ────────────────────────────────────────────────────────────
+
+type ManagedServer struct {
+	Config     ServerConfig
+	mu         sync.RWMutex
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	status     ServerStatus
+	startedAt  time.Time
+	lines      []ConsoleLine
+	clientsMu  sync.Mutex
+	clients    map[chan ConsoleLine]struct{}
+	currentCPU float64
+	prevProc   uint64
+	prevTime   time.Time
 }
 
-// ─── Mock Data ──────────────────────────────────────────────────────────────
-
-var servers = []Server{
-	{
-		ID: "survival-pl", Name: "SurvivalPL", MOTD: "Polski survival od 2019",
-		Icon: "grass", Version: "1.20.4 Paper", Status: "online",
-		Players: 47, MaxPlayers: 100, CPU: 42, RAM: 6.2, RAMMax: 8, TPS: 19.8,
-		Uptime: "14d 6h", IP: "survival.example.pl:25565", Type: "Survival",
-		Plugins: 23, Mods: 0, World: "overworld",
-	},
-	{
-		ID: "creative-build", Name: "CreativeBuild", MOTD: "Plot world & WorldEdit",
-		Icon: "diamond", Version: "1.20.4 Spigot", Status: "online",
-		Players: 12, MaxPlayers: 50, CPU: 18, RAM: 3.1, RAMMax: 6, TPS: 20.0,
-		Uptime: "3d 12h", IP: "creative.example.pl:25566", Type: "Creative",
-		Plugins: 31, Mods: 0, World: "flat",
-	},
-	{
-		ID: "skyblock-1", Name: "SkyBlock Reborn", MOTD: "Klasyczny skyblock",
-		Icon: "gold", Version: "1.20.1 Purpur", Status: "starting",
-		Players: 0, MaxPlayers: 80, CPU: 78, RAM: 2.4, RAMMax: 8, TPS: 18.2,
-		Uptime: "2m", IP: "sky.example.pl:25567", Type: "SkyBlock",
-		Plugins: 18, Mods: 0, World: "void",
-	},
-	{
-		ID: "modded-rpg", Name: "Forge RPG Adventure", MOTD: "Modded RPG | 200+ mods",
-		Icon: "netherite", Version: "1.19.2 Forge", Status: "online",
-		Players: 28, MaxPlayers: 60, CPU: 67, RAM: 11.4, RAMMax: 16, TPS: 19.4,
-		Uptime: "6d 22h", IP: "rpg.example.pl:25568", Type: "Modded",
-		Plugins: 4, Mods: 247, World: "rpg-overworld",
-	},
-	{
-		ID: "minigames", Name: "MiniGames Hub", MOTD: "BedWars, SkyWars, TNT Run",
-		Icon: "tnt", Version: "1.20.4 Paper", Status: "offline",
-		Players: 0, MaxPlayers: 200, CPU: 0, RAM: 0, RAMMax: 12, TPS: 0,
-		Uptime: "—", IP: "mini.example.pl:25569", Type: "MiniGames",
-		Plugins: 42, Mods: 0, World: "lobby",
-	},
-	{
-		ID: "test-snapshot", Name: "Snapshot Test", MOTD: "1.21 testing ground",
-		Icon: "enderpearl", Version: "1.21-pre1", Status: "online",
-		Players: 3, MaxPlayers: 20, CPU: 8, RAM: 1.2, RAMMax: 4, TPS: 20.0,
-		Uptime: "4h", IP: "test.example.pl:25570", Type: "Vanilla",
-		Plugins: 0, Mods: 0, World: "overworld",
-	},
-}
-
-var players = []Player{
-	{Name: "Steve_PL", UUID: "a8e6...", Op: true, Ping: 24, Playtime: "142h", Joined: "2024-03-12", Skin: "steve", World: "overworld", Status: "op"},
-	{Name: "AlexCrafter", UUID: "b3f1...", Op: false, Ping: 68, Playtime: "89h", Joined: "2024-08-04", Skin: "alex", World: "overworld", Status: "normal"},
-	{Name: "EnderKiller99", UUID: "c2a9...", Op: false, Ping: 112, Playtime: "210h", Joined: "2023-11-22", Skin: "enderman", World: "the_end", Status: "vip"},
-	{Name: "redstoneMaster", UUID: "d4b8...", Op: true, Ping: 18, Playtime: "512h", Joined: "2022-01-15", Skin: "redstone", World: "overworld", Status: "op"},
-	{Name: "pixel_panda", UUID: "e7c2...", Op: false, Ping: 45, Playtime: "34h", Joined: "2025-01-08", Skin: "panda", World: "overworld", Status: "normal"},
-	{Name: "NetherWalker", UUID: "f1d3...", Op: false, Ping: 89, Playtime: "167h", Joined: "2024-06-30", Skin: "piglin", World: "nether", Status: "vip"},
-	{Name: "Cr3eperFan", UUID: "0a2b...", Op: false, Ping: 156, Playtime: "12h", Joined: "2025-09-01", Skin: "creeper", World: "overworld", Status: "normal"},
-	{Name: "WitchPrincess", UUID: "1b3c...", Op: false, Ping: 38, Playtime: "78h", Joined: "2024-12-19", Skin: "witch", World: "overworld", Status: "normal"},
-	{Name: "IronGolemPro", UUID: "2c4d...", Op: false, Ping: 22, Playtime: "301h", Joined: "2023-05-04", Skin: "iron", World: "overworld", Status: "vip"},
-}
-
-var plugins = []Plugin{
-	{Name: "EssentialsX", Version: "2.20.1", Author: "EssentialsX Team", Enabled: true, Desc: "Podstawowe komendy serwera", Icon: "book"},
-	{Name: "WorldEdit", Version: "7.3.0", Author: "EngineHub", Enabled: true, Desc: "Szybka edycja świata", Icon: "wood-axe"},
-	{Name: "WorldGuard", Version: "7.0.10", Author: "EngineHub", Enabled: true, Desc: "Ochrona regionów", Icon: "shield"},
-	{Name: "LuckPerms", Version: "5.4.0", Author: "lucko", Enabled: true, Desc: "System uprawnień i grup", Icon: "paper"},
-	{Name: "Vault", Version: "1.7.3", Author: "MilkBowl", Enabled: true, Desc: "API ekonomii i uprawnień", Icon: "gold-ingot"},
-	{Name: "PlaceholderAPI", Version: "2.11.6", Author: "clip", Enabled: true, Desc: "Placeholdery dla pluginów", Icon: "paper"},
-	{Name: "CoreProtect", Version: "22.4", Author: "Intelli", Enabled: true, Desc: "Logowanie i rollback", Icon: "compass"},
-	{Name: "mcMMO", Version: "2.2.018", Author: "nossr50", Enabled: true, Desc: "RPG skille dla graczy", Icon: "enchanted-book"},
-	{Name: "Citizens", Version: "2.0.33", Author: "fullwall", Enabled: true, Desc: "NPC i questy", Icon: "villager"},
-	{Name: "ProtocolLib", Version: "5.3.0", Author: "dmulloy2", Enabled: true, Desc: "Manipulacja protokołem", Icon: "eye-of-ender"},
-	{Name: "DiscordSRV", Version: "1.28.0", Author: "Scarsz", Enabled: true, Desc: "Most Discord ↔ Minecraft", Icon: "lapis"},
-	{Name: "ChestShop", Version: "3.12.4", Author: "Acrobot", Enabled: false, Desc: "Sklepy w skrzyniach", Icon: "chest"},
-	{Name: "Citizens-Quests", Version: "1.4.2", Author: "PikaMug", Enabled: true, Desc: "System questów", Icon: "paper"},
-	{Name: "AntiCheat", Version: "0.2.5", Author: "shaneBeee", Enabled: true, Desc: "Wykrywanie hackow", Icon: "iron-sword"},
-}
-
-var backups = []Backup{
-	{ID: "b1", Name: "auto-2026-04-28-06h", Size: "847 MB", Created: "2026-04-28 06:00", Auto: true, Status: "ready"},
-	{ID: "b2", Name: "auto-2026-04-27-06h", Size: "839 MB", Created: "2026-04-27 06:00", Auto: true, Status: "ready"},
-	{ID: "b3", Name: "pre-update-1.20.4", Size: "812 MB", Created: "2026-04-25 14:30", Auto: false, Status: "ready"},
-	{ID: "b4", Name: "auto-2026-04-26-06h", Size: "835 MB", Created: "2026-04-26 06:00", Auto: true, Status: "ready"},
-	{ID: "b5", Name: "manual-spawn-rebuild", Size: "798 MB", Created: "2026-04-20 22:14", Auto: false, Status: "ready"},
-}
-
-var initialConsole = []ConsoleLine{
-	{T: "09:42:01", Lvl: "INFO", Txt: `Done (12.341s)! For help, type "help"`, Col: "#aaaaaa"},
-	{T: "09:42:18", Lvl: "INFO", Txt: "Steve_PL[/192.168.1.42:54321] logged in with entity id 8742", Col: "#ffffff"},
-	{T: "09:42:18", Lvl: "INFO", Txt: "Steve_PL joined the game", Col: "#ffff55"},
-	{T: "09:43:02", Lvl: "INFO", Txt: "<Steve_PL> hej, ktoś chce na diamenty?", Col: "#ffffff"},
-	{T: "09:43:24", Lvl: "INFO", Txt: "AlexCrafter joined the game", Col: "#ffff55"},
-	{T: "09:43:31", Lvl: "INFO", Txt: "<AlexCrafter> jadę", Col: "#ffffff"},
-	{T: "09:44:15", Lvl: "WARN", Txt: "Can't keep up! Is the server overloaded? Running 2147ms or 42 ticks behind", Col: "#ffaa00"},
-	{T: "09:44:48", Lvl: "INFO", Txt: "EnderKiller99 issued server command: /tpa Steve_PL", Col: "#aaaaaa"},
-	{T: "09:45:02", Lvl: "INFO", Txt: "[CoreProtect] Logged 248 events.", Col: "#5fa3e8"},
-	{T: "09:45:30", Lvl: "INFO", Txt: "Saving the game (this may take a moment!)", Col: "#ffffff"},
-	{T: "09:45:32", Lvl: "INFO", Txt: "Saved the game", Col: "#aaaaaa"},
-	{T: "09:46:11", Lvl: "INFO", Txt: "<redstoneMaster> ktoś tam grał z Witch?", Col: "#ffffff"},
-	{T: "09:46:44", Lvl: "INFO", Txt: "WitchPrincess joined the game", Col: "#ffff55"},
-	{T: "09:47:01", Lvl: "INFO", Txt: "[mcMMO] Steve_PL gained 234 XP in Mining", Col: "#80ff20"},
-	{T: "09:47:25", Lvl: "ERROR", Txt: "Could not pass event PlayerInteractEvent to ChestShop v3.12.4", Col: "#ff5555"},
-	{T: "09:48:13", Lvl: "INFO", Txt: "Cr3eperFan was blown up by Creeper", Col: "#ff5555"},
-	{T: "09:48:55", Lvl: "INFO", Txt: "[DiscordSRV] Synced 47 members", Col: "#5fa3e8"},
-	{T: "09:49:32", Lvl: "INFO", Txt: "pixel_panda has made the advancement [Diamonds!]", Col: "#5cdbd5"},
-	{T: "09:50:10", Lvl: "INFO", Txt: "Server tick took 78ms (TPS: 19.4)", Col: "#aaaaaa"},
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-func jsonOK(w http.ResponseWriter, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("json encode: %v", err)
+func NewManagedServer(cfg ServerConfig) *ManagedServer {
+	return &ManagedServer{
+		Config:  cfg,
+		status:  StatusOffline,
+		lines:   make([]ConsoleLine, 0, 1000),
+		clients: make(map[chan ConsoleLine]struct{}),
 	}
 }
 
-func corsOK(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+func (s *ManagedServer) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == StatusOnline || s.status == StatusStarting {
+		return fmt.Errorf("server already running")
+	}
+	args := append(append([]string{}, s.Config.JavaArgs...), "-jar", s.Config.Jar, "nogui")
+	cmd := exec.Command("java", args...)
+	cmd.Dir = s.Config.Directory
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	s.cmd = cmd
+	s.stdin = stdin
+	s.status = StatusStarting
+	s.startedAt = time.Now()
+	go s.readOutput(stdout)
+	go s.readOutput(stderr)
+	go s.waitProcess()
+	return nil
 }
 
-func randomConsoleLine() ConsoleLine {
+func (s *ManagedServer) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == StatusOffline {
+		return fmt.Errorf("server not running")
+	}
+	s.status = StatusStopping
+	if s.stdin != nil {
+		fmt.Fprintln(s.stdin, "stop")
+	}
+	return nil
+}
+
+func (s *ManagedServer) Kill() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Kill()
+	}
+	return nil
+}
+
+func (s *ManagedServer) SendCommand(cmd string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.status != StatusOnline && s.status != StatusStarting {
+		return fmt.Errorf("server not running")
+	}
+	if s.stdin == nil {
+		return fmt.Errorf("no stdin")
+	}
+	_, err := fmt.Fprintln(s.stdin, cmd)
+	return err
+}
+
+func (s *ManagedServer) readOutput(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		raw := scanner.Text()
+		cl := parseLine(raw)
+		s.mu.Lock()
+		if s.status == StatusStarting && strings.Contains(raw, "Done (") {
+			s.status = StatusOnline
+		}
+		if len(s.lines) >= 2000 {
+			s.lines = s.lines[500:]
+		}
+		s.lines = append(s.lines, cl)
+		s.mu.Unlock()
+		s.broadcast(cl)
+	}
+}
+
+func (s *ManagedServer) waitProcess() {
+	if s.cmd != nil {
+		s.cmd.Wait()
+	}
+	s.mu.Lock()
+	s.status = StatusOffline
+	s.cmd = nil
+	s.stdin = nil
+	s.mu.Unlock()
+	s.broadcast(ConsoleLine{
+		Time:    time.Now().Format("15:04:05"),
+		Level:   "INFO",
+		Message: "Server process exited.",
+	})
+}
+
+func (s *ManagedServer) broadcast(line ConsoleLine) {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	for ch := range s.clients {
+		select {
+		case ch <- line:
+		default:
+		}
+	}
+}
+
+func (s *ManagedServer) Subscribe() chan ConsoleLine {
+	ch := make(chan ConsoleLine, 256)
+	s.clientsMu.Lock()
+	s.clients[ch] = struct{}{}
+	s.clientsMu.Unlock()
+	return ch
+}
+
+func (s *ManagedServer) Unsubscribe(ch chan ConsoleLine) {
+	s.clientsMu.Lock()
+	delete(s.clients, ch)
+	s.clientsMu.Unlock()
+}
+
+func (s *ManagedServer) RecentLines() []ConsoleLine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ConsoleLine, len(s.lines))
+	copy(out, s.lines)
+	return out
+}
+
+func (s *ManagedServer) Status() ServerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status
+}
+
+func (s *ManagedServer) PID() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Pid
+	}
+	return 0
+}
+
+func (s *ManagedServer) Uptime() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.status == StatusOffline {
+		return 0
+	}
+	return int64(time.Since(s.startedAt).Seconds())
+}
+
+func (s *ManagedServer) UpdateStats() {
+	pid := s.PID()
+	if pid == 0 {
+		s.mu.Lock()
+		s.currentCPU = 0
+		s.mu.Unlock()
+		return
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 15 {
+		return
+	}
+	utime, _ := strconv.ParseUint(fields[13], 10, 64)
+	stime, _ := strconv.ParseUint(fields[14], 10, 64)
+	proc := utime + stime
 	now := time.Now()
-	ts := now.Format("15:04:05")
 
-	players := []string{"Steve_PL", "AlexCrafter", "EnderKiller99", "pixel_panda", "WitchPrincess"}
-	skills := []string{"Mining", "Excavation", "Combat", "Fishing", "Acrobatics"}
-	advancements := []string{"Diamonds!", "Stone Age", "The End?", "Monster Hunter", "Hot Stuff"}
-	msgs := []string{"hej", "idę na nether", "ktoś chce na enderpearle?", "kto na diamenty?", "gdzie spawn?"}
-
-	r := rand.Intn(6)
-	switch r {
-	case 0:
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("Server tick %dms · TPS %.2f", rand.Intn(40)+20, 19.2+rand.Float64()*0.8),
-			Col: "#aaaaaa"}
-	case 1:
-		p := players[rand.Intn(len(players))]
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("<%s> %s", p, msgs[rand.Intn(len(msgs))]),
-			Col: "#ffffff"}
-	case 2:
-		p := players[rand.Intn(len(players))]
-		sk := skills[rand.Intn(len(skills))]
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("[mcMMO] %s gained %d XP in %s", p, rand.Intn(500)+50, sk),
-			Col: "#80ff20"}
-	case 3:
-		p := players[rand.Intn(len(players))]
-		adv := advancements[rand.Intn(len(advancements))]
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("%s has made the advancement [%s]", p, adv),
-			Col: "#5cdbd5"}
-	case 4:
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("[DiscordSRV] Synced %d members", rand.Intn(50)+40),
-			Col: "#5fa3e8"}
-	default:
-		p := players[rand.Intn(len(players))]
-		return ConsoleLine{T: ts, Lvl: "INFO",
-			Txt: fmt.Sprintf("%s joined the game", p),
-			Col: "#ffff55"}
-	}
-}
-
-// ─── Handlers ────────────────────────────────────────────────────────────────
-
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "static/index.html")
-}
-
-func handleServers(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		corsOK(w)
-		return
-	}
-	jsonOK(w, servers)
-}
-
-func handleServerByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		corsOK(w)
-		return
-	}
-	id := r.PathValue("id")
-	for _, s := range servers {
-		if s.ID == id {
-			jsonOK(w, s)
-			return
+	s.mu.Lock()
+	if !s.prevTime.IsZero() {
+		elapsed := now.Sub(s.prevTime).Seconds()
+		if elapsed > 0 {
+			s.currentCPU = float64(proc-s.prevProc) / 100.0 / elapsed * 100.0
 		}
 	}
-	http.NotFound(w, r)
+	s.prevProc = proc
+	s.prevTime = now
+	s.mu.Unlock()
 }
 
-func handleServerAction(w http.ResponseWriter, r *http.Request) {
-	corsOK(w)
-	if r.Method == http.MethodOptions {
+// ── RCON ──────────────────────────────────────────────────────────────────────
+
+type rconClient struct {
+	addr     string
+	password string
+}
+
+func (rc *rconClient) Execute(cmd string) (string, error) {
+	conn, err := net.DialTimeout("tcp", rc.addr, 3*time.Second)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(8 * time.Second))
+
+	if err := rconSend(conn, 1, 3, rc.password); err != nil {
+		return "", err
+	}
+	authID, _, _, err := rconRead(conn)
+	if err != nil {
+		return "", err
+	}
+	if authID == -1 {
+		return "", fmt.Errorf("rcon auth failed")
+	}
+	if err := rconSend(conn, 2, 2, cmd); err != nil {
+		return "", err
+	}
+	_, _, body, err := rconRead(conn)
+	return body, err
+}
+
+func rconSend(conn net.Conn, id, typ int32, body string) error {
+	length := int32(4 + 4 + len(body) + 2)
+	buf := make([]byte, 4+length)
+	binary.LittleEndian.PutUint32(buf[0:], uint32(length))
+	binary.LittleEndian.PutUint32(buf[4:], uint32(id))
+	binary.LittleEndian.PutUint32(buf[8:], uint32(typ))
+	copy(buf[12:], body)
+	_, err := conn.Write(buf)
+	return err
+}
+
+func rconRead(conn net.Conn) (id, typ int32, body string, err error) {
+	var length int32
+	if err = binary.Read(conn, binary.LittleEndian, &length); err != nil {
 		return
 	}
-	id := r.PathValue("id")
-	var req ActionRequest
-	json.NewDecoder(r.Body).Decode(&req)
-	log.Printf("action %q on server %s", req.Action, id)
+	data := make([]byte, length)
+	if _, err = io.ReadFull(conn, data); err != nil {
+		return
+	}
+	id = int32(binary.LittleEndian.Uint32(data[0:4]))
+	typ = int32(binary.LittleEndian.Uint32(data[4:8]))
+	body = strings.TrimRight(string(data[8:]), "\x00")
+	return
+}
 
-	// Update in-memory status
-	for i, s := range servers {
-		if s.ID == id {
-			switch strings.ToLower(req.Action) {
-			case "stop":
-				servers[i].Status = "offline"
-				servers[i].Players = 0
-			case "start":
-				servers[i].Status = "starting"
-			case "restart":
-				servers[i].Status = "starting"
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func parseLine(raw string) ConsoleLine {
+	cl := ConsoleLine{
+		Time:    time.Now().Format("15:04:05"),
+		Level:   "INFO",
+		Message: raw,
+	}
+	// [HH:MM:SS] [Thread/LEVEL]: message
+	if len(raw) > 10 && raw[0] == '[' {
+		end := strings.Index(raw, "]")
+		if end > 0 && end < 12 {
+			cl.Time = raw[1:end]
+			rest := strings.TrimSpace(raw[end+1:])
+			if strings.HasPrefix(rest, "[") {
+				end2 := strings.Index(rest, "]")
+				if end2 > 0 {
+					bracket := rest[1:end2]
+					if idx := strings.LastIndex(bracket, "/"); idx >= 0 {
+						cl.Level = bracket[idx+1:]
+					}
+					cl.Message = strings.TrimPrefix(rest[end2+1:], ": ")
+				}
 			}
-			jsonOK(w, servers[i])
-			return
 		}
 	}
-	http.NotFound(w, r)
+	switch strings.ToUpper(cl.Level) {
+	case "WARN", "WARNING":
+		cl.Level = "WARN"
+	case "ERROR", "SEVERE", "FATAL":
+		cl.Level = "ERROR"
+	default:
+		cl.Level = "INFO"
+	}
+	return cl
 }
 
-func handleCommand(w http.ResponseWriter, r *http.Request) {
-	corsOK(w)
-	if r.Method == http.MethodOptions {
+func readServerProperties(dir string) map[string]string {
+	props := make(map[string]string)
+	data, err := os.ReadFile(filepath.Join(dir, "server.properties"))
+	if err != nil {
+		return props
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if idx := strings.IndexByte(line, '='); idx >= 0 {
+			props[line[:idx]] = line[idx+1:]
+		}
+	}
+	return props
+}
+
+func readMaxRAM(args []string) int64 {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-Xmx") {
+			val := a[4:]
+			mult := int64(1)
+			if strings.HasSuffix(val, "G") {
+				mult = 1024
+				val = val[:len(val)-1]
+			} else if strings.HasSuffix(val, "M") {
+				val = val[:len(val)-1]
+			}
+			n, _ := strconv.ParseInt(val, 10, 64)
+			return n * mult
+		}
+	}
+	return 0
+}
+
+func readProcRAM(pid int) int64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "VmRSS:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				kb, _ := strconv.ParseInt(fields[1], 10, 64)
+				return kb / 1024
+			}
+		}
+	}
+	return 0
+}
+
+func jsonResp(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func safePath(base, sub string) (string, error) {
+	target := filepath.Clean(filepath.Join(base, sub))
+	if !strings.HasPrefix(target+string(filepath.Separator), base+string(filepath.Separator)) {
+		return "", fmt.Errorf("forbidden")
+	}
+	return target, nil
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
+type App struct {
+	mu      sync.RWMutex
+	servers map[string]*ManagedServer
+}
+
+func NewApp(cfg Config) *App {
+	app := &App{servers: make(map[string]*ManagedServer)}
+	for _, sc := range cfg.Servers {
+		app.servers[sc.ID] = NewManagedServer(sc)
+	}
+	return app
+}
+
+func (a *App) get(id string) (*ManagedServer, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	s, ok := a.servers[id]
+	return s, ok
+}
+
+func (a *App) all() []*ManagedServer {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]*ManagedServer, 0, len(a.servers))
+	for _, s := range a.servers {
+		out = append(out, s)
+	}
+	return out
+}
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+func (a *App) handleServers(w http.ResponseWriter, r *http.Request) {
+	var result []Server
+	for _, ms := range a.all() {
+		pid := ms.PID()
+		var ram int64
+		if pid > 0 {
+			ram = readProcRAM(pid)
+		}
+		props := readServerProperties(ms.Config.Directory)
+		maxPlayers := 20
+		if v := props["max-players"]; v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				maxPlayers = n
+			}
+		}
+		version := props["version"]
+
+		players := 0
+		if ms.Status() == StatusOnline && ms.Config.RCONPort > 0 {
+			rc := &rconClient{
+				addr:     fmt.Sprintf("localhost:%d", ms.Config.RCONPort),
+				password: ms.Config.RCONPassword,
+			}
+			if resp, err := rc.Execute("list"); err == nil {
+				fmt.Sscanf(resp, "There are %d", &players)
+			}
+		}
+
+		ms.mu.RLock()
+		cpu := ms.currentCPU
+		ms.mu.RUnlock()
+
+		result = append(result, Server{
+			ID:         ms.Config.ID,
+			Name:       ms.Config.Name,
+			Status:     ms.Status(),
+			Version:    version,
+			Players:    players,
+			MaxPlayers: maxPlayers,
+			CPU:        cpu,
+			RAM:        ram,
+			RAMMax:     readMaxRAM(ms.Config.JavaArgs),
+			Uptime:     ms.Uptime(),
+			Port:       ms.Config.Port,
+		})
+	}
+	if result == nil {
+		result = []Server{}
+	}
+	jsonResp(w, result)
+}
+
+func (a *App) handleAction(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
 		return
 	}
-	id := r.PathValue("id")
-	var req CommandRequest
-	json.NewDecoder(r.Body).Decode(&req)
-	log.Printf("command %q on server %s", req.Command, id)
-	jsonOK(w, map[string]string{"status": "ok"})
-}
+	var body struct {
+		Action string `json:"action"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
 
-func handlePlayers(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		corsOK(w)
+	var err error
+	switch body.Action {
+	case "start":
+		err = ms.Start()
+	case "stop":
+		err = ms.Stop()
+	case "kill":
+		err = ms.Kill()
+	case "restart":
+		go func() {
+			ms.Stop()
+			for i := 0; i < 60; i++ {
+				time.Sleep(time.Second)
+				if ms.Status() == StatusOffline {
+					break
+				}
+			}
+			ms.Start()
+		}()
+	default:
+		http.Error(w, "unknown action", 400)
 		return
 	}
-	jsonOK(w, players)
-}
-
-func handlePlugins(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		corsOK(w)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
 		return
 	}
-	jsonOK(w, plugins)
+	jsonResp(w, map[string]string{"status": "ok"})
 }
 
-func handleBackups(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		corsOK(w)
+func (a *App) handleCommand(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
 		return
 	}
-	jsonOK(w, backups)
+	var body struct {
+		Command string `json:"command"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if err := ms.SendCommand(body.Command); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "ok"})
 }
 
-// handleConsoleStream streams live console lines via Server-Sent Events (SSE).
-// It first flushes the historical log, then generates new lines every 2s.
-func handleConsoleStream(w http.ResponseWriter, r *http.Request) {
-	corsOK(w)
+func (a *App) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		http.Error(w, "streaming unsupported", 500)
 		return
 	}
-
-	// Send historical lines
-	for _, line := range initialConsole {
+	for _, line := range ms.RecentLines() {
 		data, _ := json.Marshal(line)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 	}
 	flusher.Flush()
 
-	ticker := time.NewTicker(2 * time.Second)
+	ch := ms.Subscribe()
+	defer ms.Unsubscribe(ch)
+	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
-			line := randomConsoleLine()
+		case line := <-ch:
 			data, _ := json.Marshal(line)
 			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		}
 	}
 }
 
-func handleStatHistory(w http.ResponseWriter, r *http.Request) {
-	corsOK(w)
-	jsonOK(w, map[string][]float64{
-		"cpu":     {22, 28, 31, 25, 30, 35, 42, 38, 33, 29, 31, 36, 44, 51, 48, 42, 39, 41, 45, 47, 42, 38, 41, 42},
-		"ram":     {4.1, 4.3, 4.5, 4.6, 4.8, 5.1, 5.3, 5.5, 5.6, 5.6, 5.7, 5.9, 6.0, 6.1, 6.2, 6.2, 6.2, 6.1, 6.1, 6.2, 6.2, 6.2, 6.2, 6.2},
-		"tps":     {20.0, 20.0, 20.0, 20.0, 19.9, 19.8, 19.5, 19.2, 19.4, 19.7, 19.9, 20.0, 19.8, 19.5, 19.0, 18.7, 19.2, 19.6, 19.8, 19.9, 19.8, 19.7, 19.8, 19.8},
-		"players": {12, 14, 18, 22, 26, 31, 35, 38, 42, 44, 45, 46, 47, 48, 47, 47, 46, 45, 47, 48, 47, 47, 47, 47},
+func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	var players []Player
+
+	if ms.Status() == StatusOnline && ms.Config.RCONPort > 0 {
+		rc := &rconClient{
+			addr:     fmt.Sprintf("localhost:%d", ms.Config.RCONPort),
+			password: ms.Config.RCONPassword,
+		}
+		if resp, err := rc.Execute("list"); err == nil {
+			if idx := strings.Index(resp, ": "); idx >= 0 {
+				for _, name := range strings.Split(resp[idx+2:], ", ") {
+					name = strings.TrimSpace(name)
+					if name != "" {
+						players = append(players, Player{Name: name, Online: true, World: "world"})
+					}
+				}
+			}
+		}
+	}
+
+	// Merge usercache.json for offline players
+	if raw, err := os.ReadFile(filepath.Join(ms.Config.Directory, "usercache.json")); err == nil {
+		var cache []struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &cache) == nil {
+			online := make(map[string]bool)
+			for _, p := range players {
+				online[p.Name] = true
+			}
+			for _, c := range cache {
+				if !online[c.Name] {
+					players = append(players, Player{Name: c.Name, Online: false})
+				}
+			}
+		}
+	}
+	if players == nil {
+		players = []Player{}
+	}
+	jsonResp(w, players)
+}
+
+func (a *App) handlePlugins(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	dir := filepath.Join(ms.Config.Directory, "plugins")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		jsonResp(w, []Plugin{})
+		return
+	}
+	var plugins []Plugin
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jar") {
+			continue
+		}
+		plugins = append(plugins, Plugin{
+			Name:    strings.TrimSuffix(e.Name(), ".jar"),
+			Enabled: true,
+		})
+	}
+	if plugins == nil {
+		plugins = []Plugin{}
+	}
+	jsonResp(w, plugins)
+}
+
+func (a *App) handleFiles(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	base := filepath.Clean(ms.Config.Directory)
+	target, err := safePath(base, r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, err.Error(), 403)
+		return
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	var files []FileEntry
+	for _, e := range entries {
+		info, _ := e.Info()
+		var size int64
+		var modTime string
+		if info != nil {
+			size = info.Size()
+			modTime = info.ModTime().Format(time.RFC3339)
+		}
+		files = append(files, FileEntry{
+			Name:    e.Name(),
+			IsDir:   e.IsDir(),
+			Size:    size,
+			ModTime: modTime,
+		})
+	}
+	if files == nil {
+		files = []FileEntry{}
+	}
+	jsonResp(w, files)
+}
+
+func (a *App) handleFileContent(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	base := filepath.Clean(ms.Config.Directory)
+	target, err := safePath(base, r.URL.Query().Get("path"))
+	if err != nil {
+		http.Error(w, err.Error(), 403)
+		return
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if len(data) > 1<<20 {
+		data = data[:1<<20]
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(data)
+}
+
+func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	dir := filepath.Join(ms.Config.Directory, "backups")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		jsonResp(w, []Backup{})
+		return
+	}
+	var backups []Backup
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tar.gz") {
+			continue
+		}
+		info, _ := e.Info()
+		var size int64
+		var mod string
+		if info != nil {
+			size = info.Size()
+			mod = info.ModTime().Format(time.RFC3339)
+		}
+		backups = append(backups, Backup{
+			ID: e.Name(), Name: e.Name(), Size: size, CreatedAt: mod,
+		})
+	}
+	if backups == nil {
+		backups = []Backup{}
+	}
+	jsonResp(w, backups)
+}
+
+func (a *App) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	backupsDir := filepath.Join(ms.Config.Directory, "backups")
+	if err := os.MkdirAll(backupsDir, 0755); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	filename := fmt.Sprintf("world-%s.tar.gz", time.Now().Format("2006-01-02T15-04-05"))
+	outPath := filepath.Join(backupsDir, filename)
+	worldDir := filepath.Join(ms.Config.Directory, "world")
+	go func() {
+		if err := createTarGz(outPath, worldDir); err != nil {
+			log.Printf("backup failed: %v", err)
+		}
+	}()
+	jsonResp(w, map[string]string{"status": "started", "file": filename})
+}
+
+func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	pid := ms.PID()
+	var ram int64
+	if pid > 0 {
+		ram = readProcRAM(pid)
+	}
+	ms.mu.RLock()
+	cpu := ms.currentCPU
+	ms.mu.RUnlock()
+	jsonResp(w, map[string]any{
+		"cpu":    cpu,
+		"ram":    ram,
+		"uptime": ms.Uptime(),
 	})
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ── Backup ────────────────────────────────────────────────────────────────────
+
+func createTarGz(dst, src string) error {
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+	base := filepath.Dir(src)
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(base, path)
+		hdr.Name = rel
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = io.Copy(tw, file)
+		return err
+	})
+}
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+func loadConfig(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		sample := Config{
+			Listen: ":8080",
+			Servers: []ServerConfig{
+				{
+					ID:           "survival",
+					Name:         "Survival SMP",
+					Directory:    "/opt/minecraft/survival",
+					Jar:          "server.jar",
+					JavaArgs:     []string{"-Xmx4G", "-Xms1G"},
+					Port:         25565,
+					RCONPort:     25575,
+					RCONPassword: "changeme",
+				},
+			},
+		}
+		out, _ := json.MarshalIndent(sample, "", "  ")
+		os.WriteFile(path, out, 0644)
+		log.Printf("Created sample config at %s — edit it to point to your server directories.", path)
+		return sample, nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	var cfg Config
+	cfg.Listen = ":8080"
+	return cfg, json.Unmarshal(data, &cfg)
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	cfg, err := loadConfig("craftpanel.json")
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
+	app := NewApp(cfg)
+
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		for range t.C {
+			for _, ms := range app.all() {
+				ms.UpdateStats()
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
-
-	// Static assets
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-
-	// API — servers
-	mux.HandleFunc("GET /api/servers", handleServers)
-	mux.HandleFunc("GET /api/servers/{id}", handleServerByID)
-	mux.HandleFunc("POST /api/servers/{id}/action", handleServerAction)
-	mux.HandleFunc("POST /api/servers/{id}/command", handleCommand)
-	mux.HandleFunc("GET /api/console/{id}/stream", handleConsoleStream)
-	mux.HandleFunc("GET /api/stats", handleStatHistory)
-
-	// API — global
-	mux.HandleFunc("GET /api/players", handlePlayers)
-	mux.HandleFunc("GET /api/plugins", handlePlugins)
-	mux.HandleFunc("GET /api/backups", handleBackups)
-
-	// CORS preflight
-	mux.HandleFunc("OPTIONS /api/", func(w http.ResponseWriter, r *http.Request) {
-		corsOK(w)
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, "static/index.html")
 	})
 
-	// SPA fallback
-	mux.HandleFunc("/", handleIndex)
+	mux.HandleFunc("GET /api/servers", app.handleServers)
+	mux.HandleFunc("POST /api/servers/{id}/action", app.handleAction)
+	mux.HandleFunc("POST /api/servers/{id}/command", app.handleCommand)
+	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.handleConsoleStream)
+	mux.HandleFunc("GET /api/servers/{id}/players", app.handlePlayers)
+	mux.HandleFunc("GET /api/servers/{id}/plugins", app.handlePlugins)
+	mux.HandleFunc("GET /api/servers/{id}/files", app.handleFiles)
+	mux.HandleFunc("GET /api/servers/{id}/files/content", app.handleFileContent)
+	mux.HandleFunc("GET /api/servers/{id}/backups", app.handleBackups)
+	mux.HandleFunc("POST /api/servers/{id}/backups", app.handleCreateBackup)
+	mux.HandleFunc("GET /api/servers/{id}/stats", app.handleStats)
 
-	addr := ":8080"
-	log.Printf("CraftPanel running → http://localhost%s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Printf("CraftPanel on %s", cfg.Listen)
+	log.Fatal(http.ListenAndServe(cfg.Listen, mux))
 }

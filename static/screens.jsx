@@ -499,7 +499,7 @@ function ConsoleTab({ serverId }) {
   const ref = useRef(null);
 
   useEffect(() => {
-    const src = new EventSource(`${API}/api/console/${serverId}/stream`);
+    const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`);
     src.onmessage = (e) => {
       try {
         const line = JSON.parse(e.data);

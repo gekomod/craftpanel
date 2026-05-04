@@ -1,11 +1,11 @@
 // CraftPanel — Remaining tabs (Players, Plugins, Files, Backups, Settings)
 const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
-function PlayersTab() {
+function PlayersTab({ serverId }) {
   const [players, setPlayers] = useState([]);
   useEffect(() => {
-    fetch(`${API}/api/players`).then(r => r.ok ? r.json() : null).then(d => d && setPlayers(d)).catch(() => {});
-  }, []);
+    fetch(`${API}/api/servers/${serverId}/players`).then(r => r.ok ? r.json() : null).then(d => d && setPlayers(d)).catch(() => {});
+  }, [serverId]);
 
   return (
     <div className="card" style={{ overflow: 'hidden' }}>
@@ -73,12 +73,12 @@ function Td({ children, align = 'left' }) {
   return <td style={{ padding: '12px 16px', textAlign: align, color: 'var(--text-2)' }}>{children}</td>;
 }
 
-function PluginsTab() {
+function PluginsTab({ serverId }) {
   const [plugins, setPlugins] = useState([]);
   const [sel, setSel] = useState(0);
   useEffect(() => {
-    fetch(`${API}/api/plugins`).then(r => r.ok ? r.json() : null).then(d => d && setPlugins(d)).catch(() => {});
-  }, []);
+    fetch(`${API}/api/servers/${serverId}/plugins`).then(r => r.ok ? r.json() : null).then(d => d && setPlugins(d)).catch(() => {});
+  }, [serverId]);
   const p = plugins[sel];
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--gap)' }}>
@@ -138,77 +138,75 @@ function PluginsTab() {
   );
 }
 
-function FilesTab() {
-  const FILES = [
-    { name: '..', type: 'up', size: '', modified: '' },
-    { name: 'world', type: 'folder', size: '847 MB', modified: '2026-04-27 18:32' },
-    { name: 'world_nether', type: 'folder', size: '124 MB', modified: '2026-04-27 18:32' },
-    { name: 'world_the_end', type: 'folder', size: '38 MB', modified: '2026-04-27 18:32' },
-    { name: 'plugins', type: 'folder', size: '218 MB', modified: '2026-04-26 02:14' },
-    { name: 'logs', type: 'folder', size: '64 MB', modified: '2026-04-28 09:01' },
-    { name: 'cache', type: 'folder', size: '12 MB', modified: '2026-04-28 06:00' },
-    { name: 'config', type: 'folder', size: '4.2 MB', modified: '2026-04-22 16:48' },
-    { name: 'banned-ips.json', type: 'json', size: '1.2 KB', modified: '2026-04-15 22:10' },
-    { name: 'banned-players.json', type: 'json', size: '3.8 KB', modified: '2026-04-25 14:33' },
-    { name: 'eula.txt', type: 'txt', size: '156 B', modified: '2024-01-01 00:00' },
-    { name: 'ops.json', type: 'json', size: '512 B', modified: '2026-04-20 10:25' },
-    { name: 'paper.yml', type: 'yml', size: '24 KB', modified: '2026-04-10 11:11' },
-    { name: 'permissions.yml', type: 'yml', size: '0 B', modified: '2024-01-01 00:00' },
-    { name: 'server.jar', type: 'jar', size: '52 MB', modified: '2026-04-15 08:00' },
-    { name: 'server.properties', type: 'props', size: '1.8 KB', modified: '2026-04-27 15:22' },
-    { name: 'spigot.yml', type: 'yml', size: '8.4 KB', modified: '2026-04-10 11:11' },
-    { name: 'whitelist.json', type: 'json', size: '2.1 KB', modified: '2026-04-26 19:45' },
-  ];
-  const [sel, setSel] = useState('server.properties');
-  const content = `# Minecraft server properties
-# Last modified: 2026-04-27 15:22
+function fmtSize(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
 
-server-port=25565
-gamemode=survival
-difficulty=normal
-spawn-protection=16
-max-players=100
-view-distance=10
-simulation-distance=10
-white-list=true
-enforce-whitelist=true
-motd=§a§lSurvivalPL §7| §6Polski survival od 2019
-online-mode=true
-pvp=true
-allow-flight=false
-allow-nether=true
-spawn-monsters=true
-generate-structures=true
-level-name=world
-level-seed=
-level-type=minecraft\\:normal
-op-permission-level=4
-enable-rcon=true
-rcon.port=25575
-hardcore=false
-spawn-animals=true`;
+function FilesTab({ serverId }) {
+  const [path, setPath] = useState('');
+  const [files, setFiles] = useState([]);
+  const [selFile, setSelFile] = useState(null);
+  const [content, setContent] = useState('');
+
+  useEffect(() => {
+    fetch(`${API}/api/servers/${serverId}/files?path=${encodeURIComponent(path)}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(d => { setFiles(d || []); setSelFile(null); setContent(''); })
+      .catch(() => {});
+  }, [serverId, path]);
+
+  const openFile = (name) => {
+    const filePath = path ? path + '/' + name : name;
+    setSelFile(name);
+    fetch(`${API}/api/servers/${serverId}/files/content?path=${encodeURIComponent(filePath)}`)
+      .then(r => r.ok ? r.text() : '')
+      .then(setContent)
+      .catch(() => setContent('(error reading file)'));
+  };
+
+  const navigate = (entry) => {
+    if (entry.is_dir) {
+      setPath(path ? path + '/' + entry.name : entry.name);
+    } else {
+      openFile(entry.name);
+    }
+  };
+
+  const goUp = () => {
+    const parts = path.split('/');
+    parts.pop();
+    setPath(parts.join('/'));
+  };
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 'var(--gap)', height: 'calc(100vh - 360px)', minHeight: 460 }}>
       <div className="card" style={{ padding: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', fontSize: 12, color: 'var(--text-3)', marginBottom: 8 }} className="mono">
           <I2 name="folder" size={13}/>
-          <span>~/server</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>~/{path || 'server'}</span>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {FILES.map((f, i) => (
-            <div key={f.name + i}
-              onClick={() => f.type !== 'folder' && f.type !== 'up' && setSel(f.name)}
+          {path && (
+            <div onClick={goUp} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, color: 'var(--text-3)', fontSize: 12, cursor: 'pointer' }} className="mono">
+              <I2 name="arrow-left" size={13}/><span>..</span>
+            </div>
+          )}
+          {files.map((f) => (
+            <div key={f.name}
+              onClick={() => navigate(f)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '6px 8px', borderRadius: 6,
-                background: sel === f.name ? 'var(--accent-bg)' : 'transparent',
-                color: sel === f.name ? 'var(--accent)' : 'var(--text-2)',
+                background: selFile === f.name ? 'var(--accent-bg)' : 'transparent',
+                color: selFile === f.name ? 'var(--accent)' : 'var(--text-2)',
                 fontSize: 12, cursor: 'pointer',
               }} className="mono">
-              <I2 name={f.type === 'folder' || f.type === 'up' ? 'folder' : 'eye'} size={13}/>
+              <I2 name={f.is_dir ? 'folder' : 'file-text'} size={13}/>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-              <span style={{ fontSize: 10, color: 'var(--text-4)' }}>{f.size}</span>
+              {!f.is_dir && <span style={{ fontSize: 10, color: 'var(--text-4)' }}>{fmtSize(f.size)}</span>}
             </div>
           ))}
         </div>
@@ -222,9 +220,8 @@ spawn-animals=true`;
       <div className="card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} className="mono">
-            <I2 name="eye" size={13} color="var(--text-3)"/>
-            <span style={{ fontSize: 13 }}>{sel}</span>
-            <span className="chip" style={{ height: 18, fontSize: 10 }}>● Modified</span>
+            <I2 name="file-text" size={13} color="var(--text-3)"/>
+            <span style={{ fontSize: 13 }}>{selFile || 'Wybierz plik'}</span>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn btn-sm btn-ghost"><I2 name="download" size={13}/></button>
@@ -236,17 +233,16 @@ spawn-animals=true`;
           background: 'var(--bg-0)', color: 'var(--text-2)',
           fontSize: 12.5, lineHeight: 1.7,
           overflow: 'auto', whiteSpace: 'pre-wrap',
-        }}>{content}</pre>
+        }}>{content || (selFile ? 'Ładowanie...' : 'Kliknij plik aby go otworzyć')}</pre>
       </div>
     </div>
   );
 }
 
-function BackupsTab() {
+function BackupsTab({ serverId }) {
   const [backups, setBackups] = useState([]);
-  useEffect(() => {
-    fetch(`${API}/api/backups`).then(r => r.ok ? r.json() : null).then(d => d && setBackups(d)).catch(() => {});
-  }, []);
+  const reload = () => fetch(`${API}/api/servers/${serverId}/backups`).then(r => r.ok ? r.json() : []).then(d => setBackups(d || [])).catch(() => {});
+  useEffect(() => { reload(); }, [serverId]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
@@ -259,7 +255,7 @@ function BackupsTab() {
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>Auto co 12h · Wykorzystano 4.1 / 25 GB · Ostatni: 23 min temu</div>
         </div>
         <button className="btn"><I2 name="settings" size={13}/> Konfiguruj</button>
-        <button className="btn btn-primary"><I2 name="plus" size={13} strokeWidth={2}/> Stwórz teraz</button>
+        <button className="btn btn-primary" onClick={() => fetch(`${API}/api/servers/${serverId}/backups`, {method:'POST'}).then(reload)}><I2 name="plus" size={13} strokeWidth={2}/> Stwórz teraz</button>
       </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
@@ -276,9 +272,9 @@ function BackupsTab() {
                     <span className="mono">{b.name}</span>
                   </div>
                 </Td>
-                <Td><span className={b.auto ? 'chip' : 'chip chip-online'}>{b.auto ? 'AUTO' : 'MANUAL'}</span></Td>
-                <Td><span className="mono">{b.size}</span></Td>
-                <Td><span className="mono" style={{ fontSize: 12 }}>{b.created}</span></Td>
+                <Td><span className="chip chip-online">MANUAL</span></Td>
+                <Td><span className="mono">{fmtSize(b.size)}</span></Td>
+                <Td><span className="mono" style={{ fontSize: 12 }}>{new Date(b.created_at).toLocaleString()}</span></Td>
                 <Td align="right">
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                     <button className="btn btn-sm btn-ghost"><I2 name="download" size={13}/></button>
