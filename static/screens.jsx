@@ -157,9 +157,9 @@ function DashboardScreen({ servers, navigate, onRefresh }) {
       {/* Metric cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--gap)' }}>
         <MetricCard label="Serwery online" value={onlineCount} unit={`/ ${servers.length}`} icon="server" sparkData={[3,4,4,5,5,4,5,5]} accent="var(--accent)"/>
-        <MetricCard label="Gracze" value={totalPlayers} delta="+12 dzisiaj" icon="users" sparkData={statHistory.players} accent="var(--info)"/>
-        <MetricCard label="RAM" value={totalRam.toFixed(1)} unit={`/ ${totalRamMax} GB`} icon="memory" sparkData={[18,20,21,22,23,23,24,24]} accent="var(--purple)"/>
-        <MetricCard label="Średnie TPS" value="19.7" unit="/ 20" icon="gauge" sparkData={statHistory.tps} accent="var(--warn)"/>
+        <MetricCard label="Gracze" value={totalPlayers} delta="" icon="users" sparkData={[]} accent="var(--info)"/>
+        <MetricCard label="RAM" value={totalRam.toFixed(1)} unit={`/ ${totalRamMax} GB`} icon="memory" sparkData={[]} accent="var(--purple)"/>
+        <MetricCard label="Uptime" value={`${servers.filter(s=>s.status==='online').length}/${servers.length}`} unit="serwerów" icon="gauge" sparkData={[]} accent="var(--warn)"/>
       </div>
 
       {/* Servers section */}
