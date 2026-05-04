@@ -3,6 +3,12 @@ const { Icon, CubeLogo, SteveCharacter, Avatar, ServerBadge,
         Sparkline, Tabs, MCHearts, MCProgressBar } = window.CraftUI;
 const API = '';
 
+function fmtUptime(secs) {
+  if (!secs) return '—';
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 // ─── LOGIN SCREEN with Minecraft scene ─────────────────────────────────────
 function LoginScreen({ onLogin }) {
   return (
@@ -224,7 +230,13 @@ function ServerCard({ server, onClick }) {
     ? { dot: 'dot-online', label: 'Online' }
     : server.status === 'starting'
     ? { dot: 'dot-warn', label: 'Uruchamianie...' }
+    : server.status === 'stopping'
+    ? { dot: 'dot-warn', label: 'Zatrzymywanie...' }
     : { dot: 'dot-offline', label: 'Offline' };
+
+  const typeBadge = server.type === 'bedrock'
+    ? { label: 'BEDROCK', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)' }
+    : { label: 'JAVA', color: '#4ade80', bg: 'rgba(74,222,128,0.12)' };
 
   return (
     <div ref={ref} onClick={onClick} onMouseMove={onMove} className="card server-card lift"
@@ -232,25 +244,31 @@ function ServerCard({ server, onClick }) {
       <div style={{ display: 'flex', gap: 14, marginBottom: 14 }}>
         <ServerBadge kind={server.icon} size={48}/>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>{server.name}</h3>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>{server.name}</h3>
+            <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+              color: typeBadge.color, background: typeBadge.bg, letterSpacing: '0.05em' }}>
+              {typeBadge.label}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-3)' }}>
             <span className={`dot ${statusInfo.dot}`}/>
             <span>{statusInfo.label}</span>
             <span>·</span>
-            <span className="mono">{server.version}</span>
+            <span className="mono">{server.version || 'Unknown'}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{server.motd}</div>
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, padding: '12px 0', borderTop: '1px solid var(--line-1)' }}>
-        <Stat label="Gracze" value={`${server.players}/${server.maxPlayers}`} pct={server.players / server.maxPlayers}/>
-        <Stat label="CPU" value={`${server.cpu}%`} pct={server.cpu / 100} kind="cpu"/>
-        <Stat label="TPS" value={server.tps.toFixed(1)} pct={server.tps / 20} kind="tps"/>
+        <Stat label="Gracze" value={`${server.players}/${server.max_players}`} pct={server.max_players > 0 ? server.players / server.max_players : 0}/>
+        <Stat label="CPU" value={`${(server.cpu||0).toFixed(1)}%`} pct={(server.cpu||0) / 100} kind="cpu"/>
+        <Stat label="RAM" value={`${server.ram||0} MB`} pct={server.ram_max > 0 ? (server.ram||0) / server.ram_max : 0} kind="cpu"/>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-        <span style={{ fontSize: 11, color: 'var(--text-4)' }} className="mono">{server.ip}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-4)' }} className="mono">:{server.port || '?'}</span>
         <div style={{ display: 'flex', gap: 6 }}>
           <button className="btn btn-sm" onClick={onClick}>Otwórz <Icon name="arrow-r" size={13}/></button>
         </div>
@@ -322,10 +340,20 @@ function SystemHealthCard() {
 }
 
 // ─── SERVER DETAIL with 7 tabs ─────────────────────────────────────────────
-function ServerDetailScreen({ serverId, servers, statHistory, onBack }) {
+function ServerDetailScreen({ serverId, servers, onBack }) {
   const server = servers.find(s => s.id === serverId) || servers[0];
   const [tab, setTab] = useState('overview');
   const [tnt, setTnt] = useState(false);
+  const [statHistory, setStatHistory] = useState([]);
+
+  useEffect(() => {
+    if (!serverId) return;
+    const load = () => fetch(`${API}/api/servers/${serverId}/stats/history?limit=120`)
+      .then(r => r.ok ? r.json() : []).then(d => setStatHistory(d || [])).catch(() => {});
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [serverId]);
 
   const triggerKill = () => {
     setTnt(true);
@@ -376,10 +404,10 @@ function ServerDetailScreen({ serverId, servers, statHistory, onBack }) {
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 6, fontSize: 13, color: 'var(--text-3)' }}>
-            <span className="mono">{server.ip}</span>
-            <span>·</span><span>{server.version}</span>
-            <span>·</span><span>{server.players}/{server.maxPlayers} graczy</span>
-            <span>·</span><span>uptime: {server.uptime}</span>
+            <span className="mono">:{server.port||'?'}</span>
+            <span>·</span><span>{server.version||'Unknown'}</span>
+            <span>·</span><span>{server.players||0}/{server.max_players||0} graczy</span>
+            <span>·</span><span>uptime: {fmtUptime(server.uptime)}</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -393,23 +421,27 @@ function ServerDetailScreen({ serverId, servers, statHistory, onBack }) {
 
       {tab === 'overview' && <OverviewTab server={server} statHistory={statHistory}/>}
       {tab === 'console' && <ConsoleTab serverId={server.id}/>}
-      {tab === 'players' && <PlayersTab/>}
-      {tab === 'plugins' && <PluginsTab/>}
-      {tab === 'files' && <FilesTab/>}
-      {tab === 'backups' && <BackupsTab/>}
+      {tab === 'players' && <PlayersTab serverId={server.id}/>}
+      {tab === 'plugins' && <PluginsTab serverId={server.id}/>}
+      {tab === 'files' && <FilesTab serverId={server.id}/>}
+      {tab === 'backups' && <BackupsTab serverId={server.id}/>}
       {tab === 'settings' && <SettingsTab server={server}/>}
     </div>
   );
 }
 
 function OverviewTab({ server, statHistory }) {
+  const cpuData    = (statHistory || []).map(p => p.cpu);
+  const ramData    = (statHistory || []).map(p => p.ram);
+  const playersData = (statHistory || []).map(p => p.players);
+  const ramMax = server.ram_max || 4096;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--gap)' }}>
-        <BigChart label="CPU" value={`${server.cpu}%`} data={statHistory.cpu} color="var(--danger)" max={100}/>
-        <BigChart label="RAM" value={`${server.ram} GB`} data={statHistory.ram} color="var(--purple)" max={server.ramMax}/>
-        <BigChart label="TPS" value={server.tps.toFixed(1)} data={statHistory.tps} color="var(--accent)" max={20} min={15}/>
-        <BigChart label="Gracze" value={`${server.players}`} data={statHistory.players} color="var(--info)" max={server.maxPlayers}/>
+        <BigChart label="CPU" value={`${(server.cpu||0).toFixed(1)}%`} data={cpuData} color="var(--danger)" max={100}/>
+        <BigChart label="RAM" value={`${server.ram||0} MB`} data={ramData} color="var(--purple)" max={ramMax}/>
+        <BigChart label="Uptime" value={fmtUptime(server.uptime)} data={[]} color="var(--accent)" max={1}/>
+        <BigChart label="Gracze" value={`${server.players||0}`} data={playersData} color="var(--info)" max={server.max_players||20}/>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 'var(--gap)' }}>
