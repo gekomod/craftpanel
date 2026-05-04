@@ -1,4 +1,5 @@
 const { useState, useEffect, useRef, useCallback } = React;
+const TWEAK_DEFAULTS = { theme: 'default', font: 'modern', density: 'regular', animations: true };
 const { LoginScreen, DashboardScreen, ServerDetailScreen } = window.CraftScreens;
 const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab } = window.CraftTabs;
 const { Icon, CubeLogo, SteveCharacter, TweaksPanel, useTweaks } = window.CraftUI;
@@ -202,7 +203,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [installerOpen, setInstallerOpen] = useState(false);
-  const { tweaks, setTweak } = useTweaks();
+  const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const loadServers = useCallback(() => {
     fetch('/api/servers')
@@ -220,11 +221,12 @@ function App() {
   }, [route.screen, loadServers]);
 
   useEffect(() => {
+    const t = tweaks || TWEAK_DEFAULTS;
     const root = document.documentElement;
-    root.setAttribute('data-theme', tweaks.theme || 'default');
-    root.setAttribute('data-font', tweaks.font || 'geist');
-    root.setAttribute('data-density', tweaks.density || 'normal');
-    root.setAttribute('data-animations', tweaks.animations !== false ? 'on' : 'off');
+    root.setAttribute('data-theme', t.theme || 'default');
+    root.setAttribute('data-font', t.font || 'modern');
+    root.setAttribute('data-density', t.density || 'regular');
+    root.setAttribute('data-animations', t.animations !== false ? 'on' : 'off');
   }, [tweaks]);
 
   const navigate = (next) => setRoute(next);
@@ -264,9 +266,7 @@ function App() {
           )}
         </main>
       </div>
-      {tweaksOpen && (
-        <TweaksPanel tweaks={tweaks} setTweak={setTweak} onClose={() => setTweaksOpen(false)}/>
-      )}
+      <TweaksPanel open={tweaksOpen} t={tweaks || TWEAK_DEFAULTS} setTweak={setTweak} onClose={() => setTweaksOpen(false)}/>
       {installerOpen && (
         <InstallerModal
           onClose={() => setInstallerOpen(false)}
