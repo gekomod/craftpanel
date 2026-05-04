@@ -123,7 +123,8 @@ function LoginScreen({ onLogin }) {
 }
 
 // ─── DASHBOARD ──────────────────────────────────────────────────────────────
-function DashboardScreen({ servers, statHistory, onSelectServer }) {
+function DashboardScreen({ servers, navigate, onRefresh }) {
+  const onSelectServer = (id) => navigate({ screen: 'detail', serverId: id, tab: 'dashboard' });
   const onlineCount = servers.filter(s => s.status === 'online').length;
   const totalRam = servers.reduce((a, s) => a + s.ram, 0);
   const totalRamMax = servers.reduce((a, s) => a + s.ramMax, 0);
@@ -184,7 +185,7 @@ function DashboardScreen({ servers, statHistory, onSelectServer }) {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 'var(--gap)' }}>
-        {filtered.map(s => <ServerCard key={s.id} server={s} onClick={() => onSelectServer(s.id)}/>)}
+        {filtered.map(s => <ServerCard key={s.id} server={s} onClick={() => onSelectServer(s.id)} onRefresh={onRefresh}/>)}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 'var(--gap)', marginTop: 12 }}>
@@ -217,13 +218,25 @@ function MetricCard({ label, value, unit, delta, icon, sparkData, accent }) {
   );
 }
 
-function ServerCard({ server, onClick }) {
+function ServerCard({ server, onClick, onRefresh }) {
   const [hover, setHover] = useState({ x: 50, y: 50 });
+  const [actLoading, setActLoading] = useState('');
   const ref = useRef(null);
   const onMove = (e) => {
     if (!ref.current) return;
     const r = ref.current.getBoundingClientRect();
     setHover({ x: ((e.clientX - r.left) / r.width) * 100, y: ((e.clientY - r.top) / r.height) * 100 });
+  };
+
+  const doAction = (e, action) => {
+    e.stopPropagation();
+    setActLoading(action);
+    fetch(`/api/servers/${server.id}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    }).then(() => setTimeout(() => { setActLoading(''); onRefresh && onRefresh(); }, 1500))
+      .catch(() => setActLoading(''));
   };
 
   const statusInfo = server.status === 'online'
@@ -269,8 +282,33 @@ function ServerCard({ server, onClick }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
         <span style={{ fontSize: 11, color: 'var(--text-4)' }} className="mono">:{server.port || '?'}</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn btn-sm" onClick={onClick}>Otwórz <Icon name="arrow-r" size={13}/></button>
+        <div style={{ display: 'flex', gap: 5 }} onClick={e => e.stopPropagation()}>
+          {server.status === 'offline' && (
+            <button className="btn btn-sm btn-primary" disabled={!!actLoading}
+              onClick={e => doAction(e, 'start')}>
+              <Icon name="play" size={12}/> {actLoading === 'start' ? '...' : 'Start'}
+            </button>
+          )}
+          {server.status === 'online' && (
+            <button className="btn btn-sm" disabled={!!actLoading}
+              onClick={e => doAction(e, 'restart')}>
+              <Icon name="restart" size={12}/>
+            </button>
+          )}
+          {server.status === 'online' && (
+            <button className="btn btn-sm btn-danger" disabled={!!actLoading}
+              onClick={e => doAction(e, 'stop')}>
+              <Icon name="stop" size={12}/>
+            </button>
+          )}
+          {(server.status === 'starting' || server.status === 'stopping' || actLoading) && (
+            <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '0 6px' }}>
+              {server.status === 'starting' ? 'Start...' : 'Stop...'}
+            </span>
+          )}
+          <button className="btn btn-sm" onClick={onClick}>
+            <Icon name="arrow-r" size={13}/>
+          </button>
         </div>
       </div>
     </div>
@@ -340,7 +378,8 @@ function SystemHealthCard() {
 }
 
 // ─── SERVER DETAIL with 7 tabs ─────────────────────────────────────────────
-function ServerDetailScreen({ serverId, servers, onBack }) {
+function ServerDetailScreen({ serverId, servers, navigate }) {
+  const onBack = () => navigate && navigate({ screen: 'dashboard' });
   const server = servers.find(s => s.id === serverId) || servers[0];
   const [tab, setTab] = useState('overview');
   const [tnt, setTnt] = useState(false);

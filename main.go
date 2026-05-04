@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bufio"
 	"compress/gzip"
 	"database/sql"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -751,10 +753,11 @@ type App struct {
 	mu      sync.RWMutex
 	servers map[string]*ManagedServer
 	db      *DB
+	config  Config
 }
 
 func NewApp(cfg Config, db *DB) *App {
-	app := &App{servers: make(map[string]*ManagedServer), db: db}
+	app := &App{servers: make(map[string]*ManagedServer), db: db, config: cfg}
 	for _, sc := range cfg.Servers {
 		app.servers[sc.ID] = NewManagedServer(sc, db)
 	}
@@ -1263,6 +1266,432 @@ func loadConfig(path string) (Config, error) {
 	return cfg, json.Unmarshal(data, &cfg)
 }
 
+// ── Installer ────────────────────────────────────────────────────────────────
+
+type installJob struct {
+	mu       sync.Mutex
+	phase    string // downloading | extracting | setup | done | error
+	progress int64
+	total    int64
+	errMsg   string
+	clients  map[chan string]struct{}
+}
+
+func (j *installJob) emit() {
+	pct := 0.0
+	if j.total > 0 {
+		pct = float64(j.progress) / float64(j.total) * 100
+	}
+	if j.phase == "done" {
+		pct = 100
+	}
+	data, _ := json.Marshal(map[string]any{
+		"phase": j.phase, "progress": j.progress,
+		"total": j.total, "pct": pct, "error": j.errMsg,
+	})
+	for ch := range j.clients {
+		select {
+		case ch <- string(data):
+		default:
+		}
+	}
+}
+
+func (j *installJob) subscribe() chan string {
+	ch := make(chan string, 64)
+	j.mu.Lock()
+	j.clients[ch] = struct{}{}
+	j.mu.Unlock()
+	return ch
+}
+
+func (j *installJob) unsub(ch chan string) {
+	j.mu.Lock()
+	delete(j.clients, ch)
+	j.mu.Unlock()
+}
+
+var (
+	installJobsMu sync.RWMutex
+	installJobs   = map[string]*installJob{}
+)
+
+func newInstallJob() *installJob {
+	j := &installJob{phase: "pending", clients: make(map[chan string]struct{})}
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	installJobsMu.Lock()
+	installJobs[id] = j
+	installJobs["latest"] = j
+	installJobsMu.Unlock()
+	return j
+}
+
+type progressReader struct {
+	r   io.Reader
+	job *installJob
+}
+
+func (pr *progressReader) Read(p []byte) (n int, err error) {
+	n, err = pr.r.Read(p)
+	if n > 0 {
+		pr.job.mu.Lock()
+		pr.job.progress += int64(n)
+		pr.job.emit()
+		pr.job.mu.Unlock()
+	}
+	return
+}
+
+func handleJavaVersions(w http.ResponseWriter, r *http.Request) {
+	resp, err := http.Get("https://api.papermc.io/v2/projects/paper")
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Versions []string `json:"versions"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	// Return newest first, max 20
+	all := result.Versions
+	if len(all) > 20 {
+		all = all[len(all)-20:]
+	}
+	// Reverse
+	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+		all[i], all[j] = all[j], all[i]
+	}
+	jsonResp(w, map[string]any{"versions": all})
+}
+
+func handleBedrockInfo(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest("GET", "https://www.minecraft.net/en-us/download/server/bedrock/", nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// Extract Linux download URL
+	re := regexp.MustCompile(`https://minecraft\.azureedge\.net/bin-linux/bedrock-server-([\d.]+)\.zip`)
+	matches := re.FindStringSubmatch(string(body))
+	if len(matches) < 2 {
+		http.Error(w, "could not find download URL", 502)
+		return
+	}
+	jsonResp(w, map[string]string{
+		"version":      matches[1],
+		"download_url": matches[0],
+	})
+}
+
+func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Type      string `json:"type"`
+		Version   string `json:"version"`
+		DownloadURL string `json:"download_url"`
+		Directory string `json:"directory"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.Directory == "" {
+		http.Error(w, "directory required", 400)
+		return
+	}
+	if err := os.MkdirAll(req.Directory, 0755); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	job := newInstallJob()
+	go func() {
+		var err error
+		if req.Type == "bedrock" {
+			err = installBedrock(job, req.DownloadURL, req.Directory)
+		} else {
+			err = installJava(job, req.Version, req.Directory)
+		}
+		job.mu.Lock()
+		if err != nil {
+			job.phase = "error"
+			job.errMsg = err.Error()
+		} else {
+			job.phase = "done"
+		}
+		job.emit()
+		job.mu.Unlock()
+	}()
+
+	installJobsMu.RLock()
+	var id string
+	for k, v := range installJobs {
+		if v == job {
+			id = k
+			break
+		}
+	}
+	installJobsMu.RUnlock()
+	jsonResp(w, map[string]string{"job_id": id})
+}
+
+func handleInstallJobStream(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	installJobsMu.RLock()
+	job, ok := installJobs[id]
+	installJobsMu.RUnlock()
+	if !ok {
+		http.Error(w, "job not found", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, _ := w.(http.Flusher)
+
+	// Send current state immediately
+	job.mu.Lock()
+	job.emit()
+	job.mu.Unlock()
+
+	ch := job.subscribe()
+	defer job.unsub(ch)
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case data := <-ch:
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+			if strings.Contains(data, `"done"`) || strings.Contains(data, `"error"`) {
+				return
+			}
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func installJava(job *installJob, version, dir string) error {
+	// Get latest Paper build for version
+	resp, err := http.Get(fmt.Sprintf("https://api.papermc.io/v2/projects/paper/versions/%s/builds", version))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var buildsResp struct {
+		Builds []struct {
+			Build     int    `json:"build"`
+			Downloads struct {
+				Application struct {
+					Name string `json:"name"`
+				} `json:"application"`
+			} `json:"downloads"`
+		} `json:"builds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&buildsResp); err != nil {
+		return err
+	}
+	if len(buildsResp.Builds) == 0 {
+		return fmt.Errorf("no builds for version %s", version)
+	}
+	latest := buildsResp.Builds[len(buildsResp.Builds)-1]
+	jarName := latest.Downloads.Application.Name
+	buildNum := latest.Build
+	downloadURL := fmt.Sprintf(
+		"https://api.papermc.io/v2/projects/paper/versions/%s/builds/%d/downloads/%s",
+		version, buildNum, jarName,
+	)
+
+	job.mu.Lock()
+	job.phase = "downloading"
+	job.emit()
+	job.mu.Unlock()
+
+	if err := downloadFile(job, downloadURL, filepath.Join(dir, "server.jar")); err != nil {
+		return err
+	}
+
+	job.mu.Lock()
+	job.phase = "setup"
+	job.emit()
+	job.mu.Unlock()
+
+	// Accept EULA
+	os.WriteFile(filepath.Join(dir, "eula.txt"), []byte("eula=true\n"), 0644)
+	// Default server.properties (minimal)
+	props := "server-port=25565\nmax-players=20\nonline-mode=true\nenable-rcon=true\nrcon.port=25575\nrcon.password=craftpanel\n"
+	if _, err := os.Stat(filepath.Join(dir, "server.properties")); os.IsNotExist(err) {
+		os.WriteFile(filepath.Join(dir, "server.properties"), []byte(props), 0644)
+	}
+	return nil
+}
+
+func installBedrock(job *installJob, downloadURL, dir string) error {
+	job.mu.Lock()
+	job.phase = "downloading"
+	job.emit()
+	job.mu.Unlock()
+
+	zipPath := filepath.Join(dir, "bedrock-server.zip")
+	if err := downloadFile(job, downloadURL, zipPath); err != nil {
+		return err
+	}
+
+	job.mu.Lock()
+	job.phase = "extracting"
+	job.emit()
+	job.mu.Unlock()
+
+	if err := unzip(zipPath, dir); err != nil {
+		return err
+	}
+	os.Remove(zipPath)
+
+	// Make executable
+	os.Chmod(filepath.Join(dir, "bedrock_server"), 0755)
+
+	job.mu.Lock()
+	job.phase = "setup"
+	job.emit()
+	job.mu.Unlock()
+
+	if _, err := os.Stat(filepath.Join(dir, "server.properties")); os.IsNotExist(err) {
+		props := "server-name=CraftPanel Server\nserver-port=19132\nmax-players=10\nonline-mode=true\n"
+		os.WriteFile(filepath.Join(dir, "server.properties"), []byte(props), 0644)
+	}
+	return nil
+}
+
+func downloadFile(job *installJob, url, dest string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	job.mu.Lock()
+	job.total = resp.ContentLength
+	job.progress = 0
+	job.mu.Unlock()
+
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	pr := &progressReader{r: resp.Body, job: job}
+	_, err = io.Copy(f, pr)
+	return err
+}
+
+func unzip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		path := filepath.Join(dest, f.Name)
+		if !strings.HasPrefix(filepath.Clean(path)+string(os.PathSeparator), filepath.Clean(dest)+string(os.PathSeparator)) {
+			continue // path traversal guard
+		}
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(path, f.Mode())
+			continue
+		}
+		os.MkdirAll(filepath.Dir(path), 0755)
+		out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			out.Close()
+			return err
+		}
+		io.Copy(out, rc)
+		rc.Close()
+		out.Close()
+	}
+	return nil
+}
+
+func (a *App) handleAddServer(w http.ResponseWriter, r *http.Request) {
+	var cfg ServerConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if cfg.ID == "" || cfg.Directory == "" {
+		http.Error(w, "id and directory required", 400)
+		return
+	}
+
+	a.mu.Lock()
+	if _, exists := a.servers[cfg.ID]; exists {
+		a.mu.Unlock()
+		http.Error(w, "server ID already exists", 409)
+		return
+	}
+	ms := NewManagedServer(cfg, a.db)
+	a.servers[cfg.ID] = ms
+	a.mu.Unlock()
+
+	// Persist to craftpanel.json
+	a.saveConfig()
+	jsonResp(w, map[string]string{"status": "ok", "id": cfg.ID})
+}
+
+func (a *App) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ms, ok := a.get(id)
+	if !ok {
+		http.Error(w, "not found", 404)
+		return
+	}
+	if ms.Status() != StatusOffline {
+		http.Error(w, "stop the server first", 409)
+		return
+	}
+	a.mu.Lock()
+	delete(a.servers, id)
+	a.mu.Unlock()
+	a.saveConfig()
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
+func (a *App) saveConfig() {
+	a.mu.RLock()
+	var cfgServers []ServerConfig
+	for _, ms := range a.servers {
+		cfgServers = append(cfgServers, ms.Config)
+	}
+	a.mu.RUnlock()
+
+	cfg := Config{Listen: a.config.Listen, Servers: cfgServers}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Printf("saveConfig marshal: %v", err)
+		return
+	}
+	if err := os.WriteFile("craftpanel.json", data, 0644); err != nil {
+		log.Printf("saveConfig write: %v", err)
+	}
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -1298,6 +1727,8 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /api/servers", app.handleServers)
+	mux.HandleFunc("POST /api/servers", app.handleAddServer)
+	mux.HandleFunc("DELETE /api/servers/{id}", app.handleDeleteServer)
 	mux.HandleFunc("POST /api/servers/{id}/action", app.handleAction)
 	mux.HandleFunc("POST /api/servers/{id}/command", app.handleCommand)
 	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.handleConsoleStream)
@@ -1309,6 +1740,10 @@ func main() {
 	mux.HandleFunc("POST /api/servers/{id}/backups", app.handleCreateBackup)
 	mux.HandleFunc("GET /api/servers/{id}/stats", app.handleStats)
 	mux.HandleFunc("GET /api/servers/{id}/stats/history", app.handleStatsHistory)
+	mux.HandleFunc("GET /api/install/java/versions", handleJavaVersions)
+	mux.HandleFunc("GET /api/install/bedrock", handleBedrockInfo)
+	mux.HandleFunc("POST /api/install/start", app.handleInstallStart)
+	mux.HandleFunc("GET /api/install/jobs/{id}/stream", handleInstallJobStream)
 
 	log.Printf("CraftPanel on %s (db: craftpanel.db)", cfg.Listen)
 	log.Fatal(http.ListenAndServe(cfg.Listen, mux))
