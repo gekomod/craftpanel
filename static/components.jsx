@@ -43,6 +43,7 @@ function Icon({ name, size = 18, color = 'currentColor', strokeWidth = 1.6 }) {
     'bell':    <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></>,
     'crown':   <><path d="m2 7 5 5 5-7 5 7 5-5-2 13H4z"/></>,
     'logout':  <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></>,
+    'lock':    <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
     'eye':     <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></>,
     'sparkle': <><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></>,
     'tnt':     <><rect x="4" y="8" width="16" height="12" rx="1"/><path d="M11 8V5"/><path d="M11 5l3-2 1 2 2-1"/></>,

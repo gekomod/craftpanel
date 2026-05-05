@@ -4,8 +4,9 @@ const { LoginScreen, DashboardScreen, ServerDetailScreen } = window.CraftScreens
 const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab } = window.CraftTabs;
 const { Icon, CubeLogo, SteveCharacter, TweaksPanel, useTweaks } = window.CraftUI;
 const { InstallerModal } = window.CraftInstaller;
+const { UsersScreen, ChangePasswordModal } = window.CraftUsers;
 
-function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServer }) {
+function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServer, currentUser, onLogout }) {
   const navItems = [
     { id: 'dashboard', icon: 'grid', label: 'Dashboard' },
     { id: 'players', icon: 'users', label: 'Gracze' },
@@ -83,21 +84,31 @@ function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServe
       </nav>
 
       <div className="sidebar-footer">
-        {!collapsed && (
+        {!collapsed && currentUser && (
           <div className="sidebar-user">
             <SteveCharacter size={28} />
             <div className="sidebar-user-info">
-              <span className="sidebar-user-name">Admin</span>
-              <span className="sidebar-user-role">Operator</span>
+              <span className="sidebar-user-name">{currentUser.display_name || currentUser.username}</span>
+              <span className="sidebar-user-role">{currentUser.role === 'admin' ? 'Administrator' : currentUser.role}</span>
             </div>
+            <button className="sidebar-toggle" title="Wyloguj" onClick={onLogout} style={{ marginLeft: 'auto' }}>
+              <Icon name="logout" size={15} />
+            </button>
           </div>
+        )}
+        {!collapsed && currentUser && (
+          <button className="sidebar-item" style={{ marginTop: 4, color: 'var(--text-3)' }}
+            onClick={() => navigate({ screen: 'users' })}>
+            <Icon name="users" size={16}/>
+            <span style={{ fontSize: 13 }}>Użytkownicy</span>
+          </button>
         )}
       </div>
     </aside>
   );
 }
 
-function TopBar({ route, servers, onTweaksToggle, tweaksOpen, onAddServer }) {
+function TopBar({ route, servers, onTweaksToggle, tweaksOpen, onAddServer, currentUser, onLogout }) {
   const server = servers.find(s => s.id === route.serverId);
   const titles = { dashboard: 'Dashboard', players: 'Gracze', plugins: 'Pluginy', files: 'Pliki', backups: 'Backupy', settings: 'Ustawienia' };
 
@@ -115,13 +126,15 @@ function TopBar({ route, servers, onTweaksToggle, tweaksOpen, onAddServer }) {
             )}
           </span>
         ) : (
-          <span className="topbar-title">Dashboard</span>
+          <span className="topbar-title">{route.screen === 'users' ? 'Użytkownicy' : 'Dashboard'}</span>
         )}
       </div>
       <div className="topbar-right">
-        <button className="btn btn-sm" onClick={onAddServer}>
-          <Icon name="plus" size={14}/> Nowy serwer
-        </button>
+        {route.screen !== 'users' && (
+          <button className="btn btn-sm" onClick={onAddServer}>
+            <Icon name="plus" size={14}/> Nowy serwer
+          </button>
+        )}
         <button className={`topbar-btn ${tweaksOpen ? 'topbar-btn--active' : ''}`}
           onClick={onTweaksToggle} title="Wygląd">
           <Icon name="sliders" size={18} />
@@ -200,15 +213,20 @@ function DetailContent({ route, navigate, servers, onRefresh }) {
 function App() {
   const [route, setRoute] = useState({ screen: 'login' });
   const [servers, setServers] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [tweaksOpen, setTweaksOpen] = useState(false);
   const [installerOpen, setInstallerOpen] = useState(false);
+  const [showChangePw, setShowChangePw] = useState(false);
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const loadServers = useCallback(() => {
     fetch('/api/servers')
-      .then(r => r.json())
-      .then(data => setServers(data || []))
+      .then(r => {
+        if (r.status === 401) { setRoute({ screen: 'login' }); return null; }
+        return r.json();
+      })
+      .then(data => data && setServers(data || []))
       .catch(() => {});
   }, []);
 
@@ -229,13 +247,40 @@ function App() {
     root.setAttribute('data-animations', t.animations !== false ? 'on' : 'off');
   }, [tweaks]);
 
+  // Check if already logged in on mount
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(user => {
+        if (user) {
+          setCurrentUser(user);
+          setRoute({ screen: 'dashboard' });
+          if (user.force_change) setShowChangePw(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const navigate = (next) => setRoute(next);
 
+  const handleLogin = (user) => {
+    setCurrentUser(user);
+    navigate({ screen: 'dashboard' });
+    if (user.force_change) setShowChangePw(true);
+  };
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setCurrentUser(null);
+    setServers([]);
+    setRoute({ screen: 'login' });
+  };
+
   if (route.screen === 'login') {
-    return <LoginScreen onLogin={() => navigate({ screen: 'dashboard' })} />;
+    return <LoginScreen onLogin={handleLogin} />;
   }
 
-  const showSidebar = route.screen === 'dashboard' || route.screen === 'detail';
+  const showSidebar = route.screen === 'dashboard' || route.screen === 'detail' || route.screen === 'users';
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'app-shell--collapsed' : ''}`}>
@@ -247,6 +292,8 @@ function App() {
           collapsed={sidebarCollapsed}
           setCollapsed={setSidebarCollapsed}
           onAddServer={() => setInstallerOpen(true)}
+          currentUser={currentUser}
+          onLogout={handleLogout}
         />
       )}
       <div className="app-main">
@@ -256,6 +303,8 @@ function App() {
           onTweaksToggle={() => setTweaksOpen(o => !o)}
           tweaksOpen={tweaksOpen}
           onAddServer={() => setInstallerOpen(true)}
+          currentUser={currentUser}
+          onLogout={handleLogout}
         />
         <main className="app-content">
           {route.screen === 'dashboard' && (
@@ -264,6 +313,11 @@ function App() {
           {route.screen === 'detail' && (
             <DetailContent route={route} navigate={navigate} servers={servers} onRefresh={loadServers}/>
           )}
+          {route.screen === 'users' && (
+            <UsersScreen currentUser={currentUser} onProfileUpdate={() => {
+              fetch('/api/auth/me').then(r => r.json()).then(setCurrentUser).catch(() => {});
+            }}/>
+          )}
         </main>
       </div>
       <TweaksPanel open={tweaksOpen} t={tweaks || TWEAK_DEFAULTS} setTweak={setTweak} onClose={() => setTweaksOpen(false)}/>
@@ -271,6 +325,12 @@ function App() {
         <InstallerModal
           onClose={() => setInstallerOpen(false)}
           onAdded={() => { loadServers(); setInstallerOpen(false); }}
+        />
+      )}
+      {showChangePw && (
+        <ChangePasswordModal
+          forceChange={true}
+          onClose={(ok) => { if (ok) { setShowChangePw(false); fetch('/api/auth/me').then(r => r.json()).then(setCurrentUser).catch(() => {}); } }}
         />
       )}
     </div>

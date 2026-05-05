@@ -5,8 +5,11 @@ import (
 	"archive/zip"
 	"bufio"
 	"compress/gzip"
+	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -163,8 +167,387 @@ func (d *DB) migrate() error {
 		ts        INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_stats ON server_stats(server_id, ts);
+
+	CREATE TABLE IF NOT EXISTS users (
+		id            INTEGER PRIMARY KEY,
+		username      TEXT UNIQUE NOT NULL,
+		password_hash TEXT NOT NULL,
+		role          TEXT NOT NULL DEFAULT 'operator',
+		display_name  TEXT DEFAULT '',
+		email         TEXT DEFAULT '',
+		force_change  INTEGER DEFAULT 0,
+		permissions   TEXT DEFAULT '{}',
+		created_at    INTEGER,
+		last_login    INTEGER
+	);
+	CREATE TABLE IF NOT EXISTS sessions (
+		token      TEXT PRIMARY KEY,
+		user_id    INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL
+	);
 	`)
+	if err != nil {
+		return err
+	}
+	return d.ensureDefaultAdmin()
+}
+
+func (d *DB) ensureDefaultAdmin() error {
+	var count int
+	d.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	if count > 0 {
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec(
+		`INSERT INTO users(username,password_hash,role,display_name,force_change,permissions,created_at) VALUES(?,?,?,?,?,?,?)`,
+		"admin", string(hash), "admin", "Administrator", 1, `{}`, time.Now().Unix(),
+	)
 	return err
+}
+
+func (d *DB) GetUserByUsername(username string) (*User, string, error) {
+	var u User
+	var hash, permsJSON string
+	var lastLogin sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT id,username,password_hash,role,display_name,email,force_change,permissions,created_at,last_login FROM users WHERE username=?`, username,
+	).Scan(&u.ID, &u.Username, &hash, &u.Role, &u.DisplayName, &u.Email, &u.ForceChange, &permsJSON, &u.CreatedAt, &lastLogin)
+	if err != nil {
+		return nil, "", err
+	}
+	if lastLogin.Valid {
+		u.LastLogin = lastLogin.Int64
+	}
+	json.Unmarshal([]byte(permsJSON), &u.Permissions)
+	return &u, hash, nil
+}
+
+func (d *DB) GetUserByID(id int) (*User, error) {
+	var u User
+	var permsJSON string
+	var lastLogin sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT id,username,role,display_name,email,force_change,permissions,created_at,last_login FROM users WHERE id=?`, id,
+	).Scan(&u.ID, &u.Username, &u.Role, &u.DisplayName, &u.Email, &u.ForceChange, &permsJSON, &u.CreatedAt, &lastLogin)
+	if err != nil {
+		return nil, err
+	}
+	if lastLogin.Valid {
+		u.LastLogin = lastLogin.Int64
+	}
+	json.Unmarshal([]byte(permsJSON), &u.Permissions)
+	return &u, nil
+}
+
+func (d *DB) ListUsers() []User {
+	rows, err := d.db.Query(`SELECT id,username,role,display_name,email,force_change,permissions,created_at,last_login FROM users ORDER BY id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		var permsJSON string
+		var lastLogin sql.NullInt64
+		rows.Scan(&u.ID, &u.Username, &u.Role, &u.DisplayName, &u.Email, &u.ForceChange, &permsJSON, &u.CreatedAt, &lastLogin)
+		if lastLogin.Valid {
+			u.LastLogin = lastLogin.Int64
+		}
+		json.Unmarshal([]byte(permsJSON), &u.Permissions)
+		users = append(users, u)
+	}
+	return users
+}
+
+func (d *DB) CreateUser(username, passwordHash, role, displayName, email string, forceChange bool, perms string) (int64, error) {
+	r, err := d.db.Exec(
+		`INSERT INTO users(username,password_hash,role,display_name,email,force_change,permissions,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		username, passwordHash, role, displayName, email, boolInt(forceChange), perms, time.Now().Unix(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+func (d *DB) UpdateUser(id int, role, displayName, email, perms string) error {
+	_, err := d.db.Exec(`UPDATE users SET role=?,display_name=?,email=?,permissions=? WHERE id=?`, role, displayName, email, perms, id)
+	return err
+}
+
+func (d *DB) DeleteUser(id int) error {
+	d.db.Exec(`DELETE FROM sessions WHERE user_id=?`, id)
+	_, err := d.db.Exec(`DELETE FROM users WHERE id=?`, id)
+	return err
+}
+
+func (d *DB) ChangePassword(id int, hash string, clearForce bool) error {
+	if clearForce {
+		_, err := d.db.Exec(`UPDATE users SET password_hash=?,force_change=0 WHERE id=?`, hash, id)
+		return err
+	}
+	_, err := d.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, id)
+	return err
+}
+
+func (d *DB) UpdateLastLogin(id int) {
+	d.db.Exec(`UPDATE users SET last_login=? WHERE id=?`, time.Now().Unix(), id)
+}
+
+func (d *DB) CreateSession(userID int) (string, error) {
+	b := make([]byte, 32)
+	if _, err := cryptorand.Read(b); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(b)
+	expires := time.Now().Add(24 * time.Hour).Unix()
+	_, err := d.db.Exec(`INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)`, token, userID, expires)
+	return token, err
+}
+
+func (d *DB) GetSession(token string) (int, error) {
+	var userID int
+	var expiresAt int64
+	err := d.db.QueryRow(`SELECT user_id,expires_at FROM sessions WHERE token=?`, token).Scan(&userID, &expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	if time.Now().Unix() > expiresAt {
+		d.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
+		return 0, fmt.Errorf("session expired")
+	}
+	return userID, nil
+}
+
+func (d *DB) DeleteSession(token string) {
+	d.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// ── User types ────────────────────────────────────────────────────────────────
+
+type User struct {
+	ID          int             `json:"id"`
+	Username    string          `json:"username"`
+	Role        string          `json:"role"`
+	DisplayName string          `json:"display_name"`
+	Email       string          `json:"email"`
+	ForceChange bool            `json:"force_change"`
+	Permissions map[string]bool `json:"permissions"`
+	CreatedAt   int64           `json:"created_at"`
+	LastLogin   int64           `json:"last_login"`
+}
+
+// ── Auth middleware ───────────────────────────────────────────────────────────
+
+type ctxKey string
+
+const userKey ctxKey = "user"
+
+func userFromCtx(r *http.Request) *User {
+	u, _ := r.Context().Value(userKey).(*User)
+	return u
+}
+
+func (a *App) authMW(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie("craftpanel_session")
+		if err != nil {
+			jsonErr(w, "unauthorized", 401)
+			return
+		}
+		userID, err := a.db.GetSession(c.Value)
+		if err != nil {
+			jsonErr(w, "unauthorized", 401)
+			return
+		}
+		user, err := a.db.GetUserByID(userID)
+		if err != nil {
+			jsonErr(w, "unauthorized", 401)
+			return
+		}
+		ctx := context.WithValue(r.Context(), userKey, user)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+func (a *App) adminMW(next http.HandlerFunc) http.HandlerFunc {
+	return a.authMW(func(w http.ResponseWriter, r *http.Request) {
+		if userFromCtx(r).Role != "admin" {
+			jsonErr(w, "forbidden", 403)
+			return
+		}
+		next(w, r)
+	})
+}
+
+// ── Auth handlers ─────────────────────────────────────────────────────────────
+
+func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	user, hash, err := a.db.GetUserByUsername(req.Username)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+		jsonErr(w, "Nieprawidłowy login lub hasło", 401)
+		return
+	}
+
+	token, err := a.db.CreateSession(user.ID)
+	if err != nil {
+		jsonErr(w, "internal error", 500)
+		return
+	}
+	a.db.UpdateLastLogin(user.ID)
+	http.SetCookie(w, &http.Cookie{
+		Name: "craftpanel_session", Value: token, Path: "/",
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 86400,
+	})
+	jsonResp(w, map[string]any{"user": user})
+}
+
+func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie("craftpanel_session"); err == nil {
+		a.db.DeleteSession(c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: "craftpanel_session", Value: "", Path: "/", MaxAge: -1})
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
+func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
+	jsonResp(w, userFromCtx(r))
+}
+
+func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	me := userFromCtx(r)
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	if len(req.NewPassword) < 6 {
+		jsonErr(w, "Hasło musi mieć min. 6 znaków", 400)
+		return
+	}
+	if !me.ForceChange {
+		_, hash, err := a.db.GetUserByUsername(me.Username)
+		if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.CurrentPassword)) != nil {
+			jsonErr(w, "Nieprawidłowe obecne hasło", 401)
+			return
+		}
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		jsonErr(w, "internal error", 500)
+		return
+	}
+	a.db.ChangePassword(me.ID, string(newHash), true)
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
+func (a *App) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	me := userFromCtx(r)
+	var req struct {
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	permsJSON, _ := json.Marshal(me.Permissions)
+	a.db.UpdateUser(me.ID, me.Role, req.DisplayName, req.Email, string(permsJSON))
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
+// ── User management handlers (admin) ─────────────────────────────────────────
+
+func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	users := a.db.ListUsers()
+	if users == nil {
+		users = []User{}
+	}
+	jsonResp(w, users)
+}
+
+func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username    string          `json:"username"`
+		Password    string          `json:"password"`
+		Role        string          `json:"role"`
+		DisplayName string          `json:"display_name"`
+		Email       string          `json:"email"`
+		Permissions map[string]bool `json:"permissions"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Username == "" || req.Password == "" {
+		jsonErr(w, "username i password wymagane", 400)
+		return
+	}
+	if req.Role == "" {
+		req.Role = "user"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		jsonErr(w, "internal error", 500)
+		return
+	}
+	permsJSON, _ := json.Marshal(req.Permissions)
+	id, err := a.db.CreateUser(req.Username, string(hash), req.Role, req.DisplayName, req.Email, true, string(permsJSON))
+	if err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+	jsonResp(w, map[string]any{"status": "ok", "id": id})
+}
+
+func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.Atoi(r.PathValue("id"))
+	var req struct {
+		Role        string          `json:"role"`
+		DisplayName string          `json:"display_name"`
+		Email       string          `json:"email"`
+		Permissions map[string]bool `json:"permissions"`
+		Password    string          `json:"password"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	permsJSON, _ := json.Marshal(req.Permissions)
+	if err := a.db.UpdateUser(id, req.Role, req.DisplayName, req.Email, string(permsJSON)); err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+	if req.Password != "" {
+		if hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost); err == nil {
+			a.db.ChangePassword(id, string(hash), false)
+		}
+	}
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
+func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.Atoi(r.PathValue("id"))
+	if me := userFromCtx(r); me.ID == id {
+		jsonErr(w, "Nie możesz usunąć własnego konta", 400)
+		return
+	}
+	if err := a.db.DeleteUser(id); err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "ok"})
 }
 
 func (d *DB) SaveLine(serverID string, cl ConsoleLine) {
@@ -737,6 +1120,12 @@ func readProcRAM(pid int) int64 {
 func jsonResp(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+func jsonErr(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func safePath(base, sub string) (string, error) {
@@ -1726,24 +2115,40 @@ func main() {
 		http.ServeFile(w, r, "static/index.html")
 	})
 
-	mux.HandleFunc("GET /api/servers", app.handleServers)
-	mux.HandleFunc("POST /api/servers", app.handleAddServer)
-	mux.HandleFunc("DELETE /api/servers/{id}", app.handleDeleteServer)
-	mux.HandleFunc("POST /api/servers/{id}/action", app.handleAction)
-	mux.HandleFunc("POST /api/servers/{id}/command", app.handleCommand)
-	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.handleConsoleStream)
-	mux.HandleFunc("GET /api/servers/{id}/players", app.handlePlayers)
-	mux.HandleFunc("GET /api/servers/{id}/plugins", app.handlePlugins)
-	mux.HandleFunc("GET /api/servers/{id}/files", app.handleFiles)
-	mux.HandleFunc("GET /api/servers/{id}/files/content", app.handleFileContent)
-	mux.HandleFunc("GET /api/servers/{id}/backups", app.handleBackups)
-	mux.HandleFunc("POST /api/servers/{id}/backups", app.handleCreateBackup)
-	mux.HandleFunc("GET /api/servers/{id}/stats", app.handleStats)
-	mux.HandleFunc("GET /api/servers/{id}/stats/history", app.handleStatsHistory)
-	mux.HandleFunc("GET /api/install/java/versions", handleJavaVersions)
-	mux.HandleFunc("GET /api/install/bedrock", handleBedrockInfo)
-	mux.HandleFunc("POST /api/install/start", app.handleInstallStart)
-	mux.HandleFunc("GET /api/install/jobs/{id}/stream", handleInstallJobStream)
+	// Auth (public)
+	mux.HandleFunc("POST /api/auth/login", app.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", app.handleLogout)
+
+	// Auth (protected)
+	mux.HandleFunc("GET /api/auth/me", app.authMW(app.handleMe))
+	mux.HandleFunc("POST /api/auth/change-password", app.authMW(app.handleChangePassword))
+	mux.HandleFunc("POST /api/auth/profile", app.authMW(app.handleUpdateProfile))
+
+	// User management (admin only)
+	mux.HandleFunc("GET /api/users", app.adminMW(app.handleListUsers))
+	mux.HandleFunc("POST /api/users", app.adminMW(app.handleCreateUser))
+	mux.HandleFunc("PUT /api/users/{id}", app.adminMW(app.handleUpdateUser))
+	mux.HandleFunc("DELETE /api/users/{id}", app.adminMW(app.handleDeleteUser))
+
+	// Server API (protected)
+	mux.HandleFunc("GET /api/servers", app.authMW(app.handleServers))
+	mux.HandleFunc("POST /api/servers", app.authMW(app.handleAddServer))
+	mux.HandleFunc("DELETE /api/servers/{id}", app.authMW(app.handleDeleteServer))
+	mux.HandleFunc("POST /api/servers/{id}/action", app.authMW(app.handleAction))
+	mux.HandleFunc("POST /api/servers/{id}/command", app.authMW(app.handleCommand))
+	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.authMW(app.handleConsoleStream))
+	mux.HandleFunc("GET /api/servers/{id}/players", app.authMW(app.handlePlayers))
+	mux.HandleFunc("GET /api/servers/{id}/plugins", app.authMW(app.handlePlugins))
+	mux.HandleFunc("GET /api/servers/{id}/files", app.authMW(app.handleFiles))
+	mux.HandleFunc("GET /api/servers/{id}/files/content", app.authMW(app.handleFileContent))
+	mux.HandleFunc("GET /api/servers/{id}/backups", app.authMW(app.handleBackups))
+	mux.HandleFunc("POST /api/servers/{id}/backups", app.authMW(app.handleCreateBackup))
+	mux.HandleFunc("GET /api/servers/{id}/stats", app.authMW(app.handleStats))
+	mux.HandleFunc("GET /api/servers/{id}/stats/history", app.authMW(app.handleStatsHistory))
+	mux.HandleFunc("GET /api/install/java/versions", app.authMW(handleJavaVersions))
+	mux.HandleFunc("GET /api/install/bedrock", app.authMW(handleBedrockInfo))
+	mux.HandleFunc("POST /api/install/start", app.authMW(app.handleInstallStart))
+	mux.HandleFunc("GET /api/install/jobs/{id}/stream", app.authMW(handleInstallJobStream))
 
 	log.Printf("CraftPanel on %s (db: craftpanel.db)", cfg.Listen)
 	log.Fatal(http.ListenAndServe(cfg.Listen, mux))

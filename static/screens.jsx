@@ -11,6 +11,27 @@ function fmtUptime(secs) {
 
 // ─── LOGIN SCREEN with Minecraft scene ─────────────────────────────────────
 function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setError(d.error || 'Błąd logowania'); setLoading(false); return; }
+      onLogin(d.user || d);
+    } catch { setError('Błąd połączenia z serwerem'); setLoading(false); }
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'grid', gridTemplateColumns: '1fr 1fr', position: 'relative' }}>
       {/* Left — Minecraft hero */}
@@ -86,35 +107,24 @@ function LoginScreen({ onLogin }) {
           <h2 className="title-display" style={{ fontSize: 36, margin: 0, letterSpacing: '-0.03em' }}>Witaj z powrotem</h2>
           <p style={{ color: 'var(--text-3)', marginTop: 6, marginBottom: 32, fontSize: 14 }}>Zaloguj się aby zarządzać serwerami</p>
 
-          <label style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 500 }}>Email</label>
-          <input className="input" defaultValue="admin@craftpanel.io" style={{ marginTop: 6, marginBottom: 16 }}/>
+          <form onSubmit={submit} style={{ display: 'contents' }}>
+          <label style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 500 }}>Login</label>
+          <input className="input" value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" style={{ marginTop: 6, marginBottom: 16 }}/>
 
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <label style={{ fontSize: 12, color: 'var(--text-2)', fontWeight: 500 }}>Hasło</label>
-            <a style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}>Zapomniałem hasła</a>
           </div>
-          <input className="input" type="password" defaultValue="••••••••••" style={{ marginTop: 6, marginBottom: 16 }}/>
+          <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" style={{ marginTop: 6, marginBottom: 16 }}/>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-2)', marginBottom: 24, cursor: 'pointer' }}>
-            <input type="checkbox" defaultChecked style={{ accentColor: 'var(--accent)' }}/> Zostań zalogowany przez 30 dni
-          </label>
+          {error && <div style={{ color: '#f87171', fontSize: 13, marginBottom: 8 }}>{error}</div>}
 
-          <button className="btn btn-primary" style={{ width: '100%', height: 42, justifyContent: 'center', fontSize: 14 }} onClick={onLogin}>
-            Zaloguj się <Icon name="arrow-r" size={16} strokeWidth={2}/>
+          <button type="submit" className="btn btn-primary" style={{ width: '100%', height: 42, justifyContent: 'center', fontSize: 14 }} disabled={loading}>
+            {loading ? 'Logowanie...' : <><span>Zaloguj się</span> <Icon name="arrow-r" size={16} strokeWidth={2}/></>}
           </button>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '24px 0', color: 'var(--text-4)', fontSize: 11 }}>
-            <div style={{ flex: 1, height: 1, background: 'var(--line-1)' }}/>
-            <span>LUB</span>
-            <div style={{ flex: 1, height: 1, background: 'var(--line-1)' }}/>
-          </div>
-
-          <button className="btn" style={{ width: '100%', height: 42, justifyContent: 'center' }}>
-            <Icon name="cube" size={16}/> Kontynuuj z Microsoft
-          </button>
+          </form>
 
           <p style={{ marginTop: 32, fontSize: 12, color: 'var(--text-3)', textAlign: 'center' }}>
-            Nie masz konta? <a style={{ color: 'var(--accent)', cursor: 'pointer' }}>Stwórz darmowe konto →</a>
+            Domyślne dane: <strong>admin / admin</strong>
           </p>
         </div>
       </div>
