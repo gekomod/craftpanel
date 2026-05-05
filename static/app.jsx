@@ -1,19 +1,22 @@
 const { useState, useEffect, useRef, useCallback } = React;
 const TWEAK_DEFAULTS = { theme: 'default', font: 'modern', density: 'regular', animations: true };
 const { LoginScreen, DashboardScreen, ServerDetailScreen } = window.CraftScreens;
-const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab } = window.CraftTabs;
+const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab } = window.CraftTabs;
 const { Icon, CubeLogo, SteveCharacter, TweaksPanel, useTweaks } = window.CraftUI;
 const { InstallerModal } = window.CraftInstaller;
 const { UsersScreen, ChangePasswordModal } = window.CraftUsers;
 
 function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServer, currentUser, onLogout }) {
   const navItems = [
-    { id: 'dashboard', icon: 'grid', label: 'Dashboard' },
-    { id: 'players', icon: 'users', label: 'Gracze' },
-    { id: 'plugins', icon: 'puzzle', label: 'Pluginy' },
-    { id: 'files', icon: 'folder', label: 'Pliki' },
-    { id: 'backups', icon: 'archive', label: 'Backupy' },
-    { id: 'settings', icon: 'settings', label: 'Ustawienia' },
+    { id: 'dashboard',   icon: 'grid',      label: 'Dashboard' },
+    { id: 'players',     icon: 'users',      label: 'Gracze' },
+    { id: 'plugins',     icon: 'puzzle',     label: 'Pluginy' },
+    { id: 'marketplace', icon: 'store',      label: 'Marketplace' },
+    { id: 'files',       icon: 'folder',     label: 'Pliki' },
+    { id: 'backups',     icon: 'archive',    label: 'Backupy' },
+    { id: 'monitoring',  icon: 'gauge',      label: 'Monitoring' },
+    { id: 'security',    icon: 'shield',     label: 'Bezpieczeństwo' },
+    { id: 'settings',    icon: 'settings',   label: 'Ustawienia' },
   ];
   const currentServer = servers.find(s => route.serverId === s.id);
 
@@ -144,7 +147,7 @@ function TopBar({ route, servers, onTweaksToggle, tweaksOpen, onAddServer, curre
   );
 }
 
-function ServerActionBar({ server, onRefresh }) {
+function ServerActionBar({ server, onRefresh, onInstall }) {
   const [loading, setLoading] = useState('');
 
   const doAction = (action) => {
@@ -157,6 +160,17 @@ function ServerActionBar({ server, onRefresh }) {
       setTimeout(() => { setLoading(''); onRefresh(); }, 1500);
     }).catch(() => setLoading(''));
   };
+
+  if (!server.has_files) {
+    return (
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Brak plików serwera</span>
+        <button className="btn btn-sm btn-primary" onClick={onInstall}>
+          <Icon name="download" size={13}/> Zainstaluj pliki
+        </button>
+      </div>
+    );
+  }
 
   const isOnline  = server.status === 'online';
   const isOffline = server.status === 'offline';
@@ -188,7 +202,7 @@ function ServerActionBar({ server, onRefresh }) {
   );
 }
 
-function DetailContent({ route, navigate, servers, onRefresh }) {
+function DetailContent({ route, navigate, servers, onRefresh, onInstall }) {
   const tab = route.tab || 'dashboard';
   const sid = route.serverId;
   const server = servers.find(s => s.id === sid);
@@ -197,15 +211,18 @@ function DetailContent({ route, navigate, servers, onRefresh }) {
     <div>
       {server && (
         <div style={{ padding: '10px var(--pad) 0', display: 'flex', justifyContent: 'flex-end' }}>
-          <ServerActionBar server={server} onRefresh={onRefresh}/>
+          <ServerActionBar server={server} onRefresh={onRefresh} onInstall={onInstall}/>
         </div>
       )}
-      {tab === 'dashboard' && <ServerDetailScreen serverId={sid} servers={servers} navigate={navigate}/>}
-      {tab === 'players'   && <PlayersTab serverId={sid}/>}
-      {tab === 'plugins'   && <PluginsTab serverId={sid}/>}
-      {tab === 'files'     && <FilesTab serverId={sid}/>}
-      {tab === 'backups'   && <BackupsTab serverId={sid}/>}
-      {tab === 'settings'  && <SettingsTab serverId={sid} server={server}/>}
+      {tab === 'dashboard'   && <ServerDetailScreen serverId={sid} servers={servers} navigate={navigate}/>}
+      {tab === 'players'     && <PlayersTab serverId={sid}/>}
+      {tab === 'plugins'     && <PluginsTab serverId={sid}/>}
+      {tab === 'marketplace' && <PluginsTab serverId={sid} defaultTab="browse"/>}
+      {tab === 'files'       && <FilesTab serverId={sid}/>}
+      {tab === 'backups'     && <BackupsTab serverId={sid}/>}
+      {tab === 'monitoring'  && <MonitoringTab serverId={sid}/>}
+      {tab === 'security'    && <SecurityTab serverId={sid}/>}
+      {tab === 'settings'    && <SettingsTab serverId={sid} server={server} onDelete={() => { onRefresh(); navigate({ screen: 'dashboard' }); }} onRefresh={onRefresh}/>}
     </div>
   );
 }
@@ -311,7 +328,7 @@ function App() {
             <DashboardScreen servers={servers} navigate={navigate} onRefresh={loadServers}/>
           )}
           {route.screen === 'detail' && (
-            <DetailContent route={route} navigate={navigate} servers={servers} onRefresh={loadServers}/>
+            <DetailContent route={route} navigate={navigate} servers={servers} onRefresh={loadServers} onInstall={() => setInstallerOpen(true)}/>
           )}
           {route.screen === 'users' && (
             <UsersScreen currentUser={currentUser} onProfileUpdate={() => {

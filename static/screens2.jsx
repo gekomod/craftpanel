@@ -74,8 +74,8 @@ function Td({ children, align = 'left' }) {
   return <td style={{ padding: '12px 16px', textAlign: align, color: 'var(--text-2)' }}>{children}</td>;
 }
 
-function PluginsTab({ serverId }) {
-  const [tab, setTab] = useState('installed');
+function PluginsTab({ serverId, defaultTab }) {
+  const [tab, setTab] = useState(defaultTab || 'installed');
   const [plugins, setPlugins] = useState([]);
   const [sel, setSel] = useState(null);
   // Browse state
@@ -410,13 +410,28 @@ function BackupsTab({ serverId }) {
   );
 }
 
-function SettingsTab({ server }) {
+function SettingsTab({ server, serverId, onDelete, onRefresh }) {
+  const [delConfirm, setDelConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const deleteServer = async () => {
+    setDeleting(true);
+    try {
+      const r = await fetch(`/api/servers/${serverId || server?.id}`, { method: 'DELETE' });
+      if (r.ok) { onDelete && onDelete(); return; }
+      const d = await r.json().catch(() => ({}));
+      alert(d.error || 'Błąd usuwania serwera');
+    } catch {}
+    setDeleting(false);
+    setDelConfirm(false);
+  };
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--gap)' }}>
+    <div style={{ padding: 'var(--pad)', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--gap)' }}>
       <SettingsCard title="Podstawowe" icon="settings">
-        <SetText label="MOTD" value={server.motd}/>
-        <SetText label="Max graczy" value={server.maxPlayers} type="number"/>
-        <SetText label="Port" value="25565" type="number"/>
+        <SetText label="MOTD" value={server?.motd}/>
+        <SetText label="Max graczy" value={server?.max_players} type="number"/>
+        <SetText label="Port" value={server?.port || '25565'} type="number"/>
         <SetSelect label="Tryb gry" value="survival" options={['survival', 'creative', 'adventure', 'spectator']}/>
         <SetSelect label="Trudność" value="normal" options={['peaceful', 'easy', 'normal', 'hard']}/>
         <SetToggle label="Whitelist" value={true}/>
@@ -435,7 +450,7 @@ function SettingsTab({ server }) {
       </SettingsCard>
 
       <SettingsCard title="Performance" icon="cpu">
-        <SetText label="RAM (max)" value={server.ramMax} type="number" suffix="GB"/>
+        <SetText label="RAM (max)" value="2" type="number" suffix="GB"/>
         <SetText label="Auto-save interval" value="300" type="number" suffix="s"/>
         <SetToggle label="Auto-restart o 4:00" value={true}/>
         <SetToggle label="Watchdog" value={true}/>
@@ -443,10 +458,40 @@ function SettingsTab({ server }) {
 
       <SettingsCard title="Strefa zagrożenia" icon="flame" danger>
         <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 0 }}>Te akcje są nieodwracalne. Stwórz backup przed kontynuowaniem.</p>
-        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}><I2 name="restart" size={14}/> Reset świata</button>
-        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}><I2 name="trash" size={14}/> Wyczyść playerdata</button>
-        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center' }}><I2 name="power" size={14}/> Usuń serwer permanentnie</button>
+        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}>
+          <I2 name="restart" size={14}/> Reset świata
+        </button>
+        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center', marginBottom: 8 }}>
+          <I2 name="trash" size={14}/> Wyczyść playerdata
+        </button>
+        <button className="btn btn-danger" style={{ width: '100%', justifyContent: 'center' }}
+          onClick={() => setDelConfirm(true)}>
+          <I2 name="power" size={14}/> Usuń serwer z panelu
+        </button>
       </SettingsCard>
+
+      {delConfirm && (
+        <div className="modal-backdrop" onClick={() => setDelConfirm(false)}>
+          <div className="modal" style={{ maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Usuń serwer</h3>
+              <button className="modal-close" onClick={() => setDelConfirm(false)}><I2 name="x" size={18}/></button>
+            </div>
+            <div style={{ padding: '16px 20px' }}>
+              <p style={{ color: 'var(--text-2)', fontSize: 14, margin: 0 }}>
+                Usuwa serwer <strong>{server?.name}</strong> z panelu CraftPanel.<br/>
+                <span style={{ color: 'var(--text-3)', fontSize: 12 }}>Pliki na dysku nie zostaną usunięte. Serwer musi być zatrzymany.</span>
+              </p>
+            </div>
+            <div style={{ padding: '0 20px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setDelConfirm(false)}>Anuluj</button>
+              <button className="btn btn-danger" onClick={deleteServer} disabled={deleting}>
+                {deleting ? 'Usuwanie…' : 'Usuń serwer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -513,4 +558,120 @@ function SetToggle({ label, value }) {
   );
 }
 
-window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab };
+function MonitoringTab({ serverId }) {
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    fetch(`/api/servers/${serverId}/stats/history`)
+      .then(r => r.ok ? r.json() : []).then(d => setHistory(d || [])).catch(() => {});
+    const t = setInterval(() => {
+      fetch(`/api/servers/${serverId}/stats/history`)
+        .then(r => r.ok ? r.json() : []).then(d => setHistory(d || [])).catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [serverId]);
+
+  const cpuData  = history.map(h => h.cpu || 0);
+  const ramData  = history.map(h => h.ram || 0);
+  const playData = history.map(h => h.players || 0);
+  const { Sparkline } = window.CraftUI;
+
+  const Chart = ({ label, data, color, unit }) => (
+    <div className="card" style={{ padding: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)' }}>{label}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+          {data.length ? (data[data.length-1]).toFixed(unit === '%' ? 1 : 0) : '—'}<span style={{ fontSize: 12, color: 'var(--text-3)', marginLeft: 2 }}>{unit}</span>
+        </div>
+      </div>
+      <Sparkline data={data.length >= 2 ? data : [0, 0]} color={color} height={60}/>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 'var(--pad)', display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--gap)' }}>
+        <Chart label="CPU" data={cpuData} color="var(--danger)" unit="%"/>
+        <Chart label="RAM" data={ramData.map(v => v / 1024 / 1024)} color="var(--purple)" unit=" MB"/>
+        <Chart label="Gracze online" data={playData} color="var(--accent)" unit=""/>
+      </div>
+      <div className="card" style={{ padding: 18 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 14 }}>Historia (ostatnie {history.length} pomiarów)</div>
+        {history.length === 0 ? (
+          <div style={{ color: 'var(--text-4)', fontSize: 13 }}>Brak danych — serwer musi działać by zbierać statystyki.</div>
+        ) : (
+          <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+            <thead><tr style={{ borderBottom: '1px solid var(--line-1)' }}>
+              {['Czas', 'CPU', 'RAM', 'Gracze'].map(h => <th key={h} style={{ padding: '6px 12px', textAlign: 'left', color: 'var(--text-3)', fontWeight: 500 }}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {[...history].reverse().slice(0, 20).map((h, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--line-1)' }}>
+                  <td style={{ padding: '6px 12px', color: 'var(--text-3)' }} className="mono">{new Date(h.ts * 1000).toLocaleTimeString('pl')}</td>
+                  <td style={{ padding: '6px 12px' }} className="mono">{(h.cpu||0).toFixed(1)}%</td>
+                  <td style={{ padding: '6px 12px' }} className="mono">{((h.ram||0)/1024/1024).toFixed(0)} MB</td>
+                  <td style={{ padding: '6px 12px' }} className="mono">{h.players || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SecurityTab({ serverId }) {
+  return (
+    <div style={{ padding: 'var(--pad)', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--gap)' }}>
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(248,113,113,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--danger)' }}>
+            <I2 name="shield" size={15}/>
+          </div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Whitelist</h3>
+        </div>
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>Zarządzaj białą listą graczy.</div>
+        <button className="btn btn-sm" style={{ marginTop: 12 }}><I2 name="plus" size={13}/> Dodaj gracza</button>
+      </div>
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(248,113,113,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--danger)' }}>
+            <I2 name="x" size={15}/>
+          </div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Blacklist / Bany</h3>
+        </div>
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>Lista zbanowanych graczy i IP.</div>
+        <button className="btn btn-sm btn-danger" style={{ marginTop: 12 }}><I2 name="plus" size={13}/> Dodaj bana</button>
+      </div>
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--bg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--warn)' }}>
+            <I2 name="crown" size={15}/>
+          </div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Operatorzy (OP)</h3>
+        </div>
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>Gracze z uprawnieniami operatora.</div>
+        <button className="btn btn-sm" style={{ marginTop: 12 }}><I2 name="plus" size={13}/> Dodaj OP</button>
+      </div>
+      <div className="card" style={{ padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--bg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--info)' }}>
+            <I2 name="lock" size={15}/>
+          </div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>RCON</h3>
+        </div>
+        <div style={{ color: 'var(--text-3)', fontSize: 13 }}>Zdalne połączenie konsolowe.</div>
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', color: 'var(--text-2)' }}>
+            <span>Port</span><span className="mono">25575</span>
+          </div>
+          <div style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', color: 'var(--text-2)' }}>
+            <span>Status</span><span style={{ color: 'var(--accent)' }}>Aktywny</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab };

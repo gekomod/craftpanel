@@ -65,11 +65,14 @@ html, body {
 }
 body {
   background:
-    radial-gradient(1200px 600px at 80% -10%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, color-mix(in oklab, var(--accent) 5%, transparent), transparent 60%),
-    var(--bg-0);
+    radial-gradient(ellipse 1200px 500px at 85% -5%, rgba(74,222,128,0.07), transparent 70%),
+    radial-gradient(ellipse 800px 600px at -5% 105%, rgba(74,222,128,0.05), transparent 70%),
+    #07090b;
   min-height: 100vh;
 }
+[data-theme="nether"] body { background: radial-gradient(ellipse 1200px 500px at 85% -5%, rgba(248,113,113,0.07), transparent 70%), radial-gradient(ellipse 800px 600px at -5% 105%, rgba(248,113,113,0.05), transparent 70%), #0a0606; }
+[data-theme="end"]    body { background: radial-gradient(ellipse 1200px 500px at 85% -5%, rgba(192,132,252,0.07), transparent 70%), radial-gradient(ellipse 800px 600px at -5% 105%, rgba(192,132,252,0.05), transparent 70%), #08060d; }
+[data-theme="aqua"]   body { background: radial-gradient(ellipse 1200px 500px at 85% -5%, rgba(34,211,238,0.07), transparent 70%), radial-gradient(ellipse 800px 600px at -5% 105%, rgba(34,211,238,0.05), transparent 70%), #060b0d; }
 #root { min-height: 100vh; }
 
 button { font-family: inherit; font-size: inherit; cursor: pointer; border: none; background: none; color: inherit; padding: 0; }

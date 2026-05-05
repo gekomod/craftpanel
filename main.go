@@ -78,6 +78,7 @@ type Server struct {
 	RAMMax     int64        `json:"ram_max"`
 	Uptime     int64        `json:"uptime"`
 	Port       int          `json:"port"`
+	HasFiles   bool         `json:"has_files"`
 }
 
 type Player struct {
@@ -1213,6 +1214,15 @@ func (a *App) handleServers(w http.ResponseWriter, r *http.Request) {
 			stype = "java"
 		}
 
+		hasFiles := false
+		if ms.Config.IsBedrock() {
+			_, err := os.Stat(filepath.Join(ms.Config.Directory, "bedrock_server"))
+			hasFiles = err == nil
+		} else {
+			_, err := os.Stat(filepath.Join(ms.Config.Directory, ms.Config.Jar))
+			hasFiles = err == nil
+		}
+
 		result = append(result, Server{
 			ID:         ms.Config.ID,
 			Name:       ms.Config.Name,
@@ -1226,6 +1236,7 @@ func (a *App) handleServers(w http.ResponseWriter, r *http.Request) {
 			RAMMax:     readMaxRAM(ms.Config.JavaArgs),
 			Uptime:     ms.Uptime(),
 			Port:       ms.Config.Port,
+			HasFiles:   hasFiles,
 		})
 	}
 	if result == nil {

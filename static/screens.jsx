@@ -293,28 +293,36 @@ function ServerCard({ server, onClick, onRefresh }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
         <span style={{ fontSize: 11, color: 'var(--text-4)' }} className="mono">:{server.port || '?'}</span>
         <div style={{ display: 'flex', gap: 5 }} onClick={e => e.stopPropagation()}>
-          {server.status === 'offline' && (
-            <button className="btn btn-sm btn-primary" disabled={!!actLoading}
-              onClick={e => doAction(e, 'start')}>
-              <Icon name="play" size={12}/> {actLoading === 'start' ? '...' : 'Start'}
+          {!server.has_files ? (
+            <button className="btn btn-sm btn-primary" onClick={onClick}>
+              <Icon name="download" size={12}/> Zainstaluj
             </button>
-          )}
-          {server.status === 'online' && (
-            <button className="btn btn-sm" disabled={!!actLoading}
-              onClick={e => doAction(e, 'restart')}>
-              <Icon name="restart" size={12}/>
-            </button>
-          )}
-          {server.status === 'online' && (
-            <button className="btn btn-sm btn-danger" disabled={!!actLoading}
-              onClick={e => doAction(e, 'stop')}>
-              <Icon name="stop" size={12}/>
-            </button>
-          )}
-          {(server.status === 'starting' || server.status === 'stopping' || actLoading) && (
-            <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '0 6px' }}>
-              {server.status === 'starting' ? 'Start...' : 'Stop...'}
-            </span>
+          ) : (
+            <>
+              {server.status === 'offline' && (
+                <button className="btn btn-sm btn-primary" disabled={!!actLoading}
+                  onClick={e => doAction(e, 'start')}>
+                  <Icon name="play" size={12}/> {actLoading === 'start' ? '...' : 'Start'}
+                </button>
+              )}
+              {server.status === 'online' && (
+                <button className="btn btn-sm" disabled={!!actLoading}
+                  onClick={e => doAction(e, 'restart')}>
+                  <Icon name="restart" size={12}/>
+                </button>
+              )}
+              {server.status === 'online' && (
+                <button className="btn btn-sm btn-danger" disabled={!!actLoading}
+                  onClick={e => doAction(e, 'stop')}>
+                  <Icon name="stop" size={12}/>
+                </button>
+              )}
+              {(server.status === 'starting' || server.status === 'stopping' || actLoading) && (
+                <span style={{ fontSize: 11, color: 'var(--text-3)', padding: '0 6px' }}>
+                  {server.status === 'starting' ? 'Start...' : 'Stop...'}
+                </span>
+              )}
+            </>
           )}
           <button className="btn btn-sm" onClick={onClick}>
             <Icon name="arrow-r" size={13}/>
