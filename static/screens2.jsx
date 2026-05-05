@@ -1,4 +1,5 @@
 // CraftPanel — Remaining tabs (Players, Plugins, Files, Backups, Settings)
+const { useState, useEffect, useCallback, useRef } = React;
 const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
 function PlayersTab({ serverId }) {
@@ -74,63 +75,181 @@ function Td({ children, align = 'left' }) {
 }
 
 function PluginsTab({ serverId }) {
+  const [tab, setTab] = useState('installed');
   const [plugins, setPlugins] = useState([]);
-  const [sel, setSel] = useState(0);
-  useEffect(() => {
-    fetch(`${API}/api/servers/${serverId}/plugins`).then(r => r.ok ? r.json() : null).then(d => d && setPlugins(d)).catch(() => {});
+  const [sel, setSel] = useState(null);
+  // Browse state
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [installing, setInstalling] = useState('');
+  const [installMsg, setInstallMsg] = useState('');
+
+  const loadPlugins = useCallback(() => {
+    fetch(`${API}/api/servers/${serverId}/plugins`)
+      .then(r => r.ok ? r.json() : []).then(d => setPlugins(d || [])).catch(() => {});
   }, [serverId]);
-  const p = plugins[sel];
+
+  useEffect(() => { loadPlugins(); }, [loadPlugins]);
+
+  const search = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    setSearching(true);
+    setResults([]);
+    try {
+      const r = await fetch(`/api/servers/${serverId}/plugins/search?q=${encodeURIComponent(query)}`);
+      setResults(r.ok ? await r.json() : []);
+    } catch {}
+    setSearching(false);
+  };
+
+  const install = async (plugin) => {
+    setInstalling(plugin.name);
+    setInstallMsg('');
+    try {
+      const r = await fetch(`/api/servers/${serverId}/plugins/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: plugin.name, download_url: plugin.download_url, source: plugin.source }),
+      });
+      const d = await r.json();
+      if (r.ok) { setInstallMsg(`✓ ${plugin.name} zainstalowany`); loadPlugins(); }
+      else setInstallMsg(`✗ ${d.error || 'Błąd'}`);
+    } catch (e) { setInstallMsg(`✗ ${e}`); }
+    setInstalling('');
+  };
+
+  const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa' };
+  const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL' };
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--gap)' }}>
-      <div className="card" style={{ padding: 18 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Pluginy <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· {plugins.length}</span></h3>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button className="btn btn-sm"><I2 name="search" size={13}/></button>
-            <button className="btn btn-sm btn-primary"><I2 name="plus" size={13} strokeWidth={2}/> Wgraj</button>
-          </div>
-        </div>
-        {plugins.map((pl, i) => (
-          <div key={i} onClick={() => setSel(i)} style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            padding: '10px 12px', cursor: 'pointer', borderRadius: 8,
-            background: sel === i ? 'var(--bg-3)' : 'transparent',
-            border: '1px solid', borderColor: sel === i ? 'var(--line-2)' : 'transparent',
-            marginBottom: 2,
-          }}>
-            <div style={{
-              width: 32, height: 32, borderRadius: 8,
-              background: pl.enabled ? 'var(--accent-bg)' : 'var(--bg-3)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: pl.enabled ? 'var(--accent)' : 'var(--text-4)',
-            }}>
-              <I2 name="plug" size={15}/>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>{pl.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-4)' }}>{pl.desc}</div>
-            </div>
-            <span className="mono" style={{ fontSize: 11, color: 'var(--text-4)' }}>v{pl.version}</span>
-            <span className={pl.enabled ? 'chip chip-online' : 'chip chip-offline'}>{pl.enabled ? 'ON' : 'OFF'}</span>
-          </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, padding: '0 var(--pad)', paddingTop: 'var(--pad)' }}>
+        {[['installed', 'puzzle', `Zainstalowane (${plugins.length})`], ['browse', 'search', 'Przeglądaj']].map(([id, icon, label]) => (
+          <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => setTab(id)}>
+            <I2 name={icon} size={14}/> {label}
+          </button>
         ))}
       </div>
 
-      {p && (
-        <div className="card" style={{ padding: 18, height: 'fit-content', position: 'sticky', top: 20 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--accent-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)', marginBottom: 14 }}>
-            <I2 name="plug" size={26}/>
+      {tab === 'installed' && (
+        <div style={{ padding: '0 var(--pad) var(--pad)', display: 'grid', gridTemplateColumns: '1fr 340px', gap: 'var(--gap)' }}>
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Zainstalowane pluginy</h3>
+              <button className="btn btn-sm" onClick={() => setTab('browse')}><I2 name="plus" size={13} strokeWidth={2}/> Dodaj</button>
+            </div>
+            {plugins.length === 0 ? (
+              <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+                Brak pluginów · <button className="btn btn-sm btn-primary" onClick={() => setTab('browse')} style={{ marginLeft: 8 }}><I2 name="search" size={12}/> Przeglądaj</button>
+              </div>
+            ) : plugins.map((pl, i) => (
+              <div key={i} onClick={() => setSel(sel === i ? null : i)} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '10px 18px', cursor: 'pointer',
+                background: sel === i ? 'var(--bg-3)' : 'transparent',
+                borderBottom: '1px solid var(--line-1)',
+              }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--accent-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)', flexShrink: 0 }}>
+                  <I2 name="puzzle" size={15}/>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{pl.name}</div>
+                  {pl.version && <div style={{ fontSize: 11, color: 'var(--text-4)' }}>v{pl.version}</div>}
+                </div>
+                <span className={pl.enabled ? 'chip chip-online' : 'chip chip-offline'}>{pl.enabled ? 'ON' : 'OFF'}</span>
+              </div>
+            ))}
           </div>
-          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{p.name}</h3>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>v{p.version} · by {p.author}</div>
-          <p style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 12, lineHeight: 1.6 }}>{p.desc}</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
-            <button className={p.enabled ? 'btn btn-danger' : 'btn btn-primary'} style={{ justifyContent: 'center' }}>
-              {p.enabled ? <><I2 name="power" size={14}/> Wyłącz</> : <><I2 name="play" size={14}/> Włącz</>}
+
+          {sel !== null && plugins[sel] && (
+            <div className="card" style={{ padding: 20, height: 'fit-content', position: 'sticky', top: 20 }}>
+              <div style={{ width: 52, height: 52, borderRadius: 12, background: 'var(--accent-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)', marginBottom: 14 }}>
+                <I2 name="puzzle" size={24}/>
+              </div>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{plugins[sel].name}</h3>
+              {plugins[sel].version && <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>v{plugins[sel].version}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 }}>
+                <button className="btn btn-ghost" style={{ justifyContent: 'center', color: 'var(--danger)' }}><I2 name="trash" size={14}/> Usuń plik</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'browse' && (
+        <div style={{ padding: '0 var(--pad) var(--pad)' }}>
+          <form onSubmit={search} style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+            <input className="input" placeholder="Szukaj pluginu np. EssentialsX, WorldEdit, LuckPerms…"
+              value={query} onChange={e => setQuery(e.target.value)} style={{ flex: 1 }}/>
+            <button className="btn btn-primary" type="submit" disabled={searching}>
+              <I2 name="search" size={14}/> {searching ? 'Szukanie…' : 'Szukaj'}
             </button>
-            <button className="btn" style={{ justifyContent: 'center' }}><I2 name="settings" size={14}/> Konfiguracja</button>
-            <button className="btn" style={{ justifyContent: 'center' }}><I2 name="upload" size={14}/> Sprawdź aktualizacje</button>
-            <button className="btn btn-ghost" style={{ justifyContent: 'center', color: 'var(--danger)' }}><I2 name="trash" size={14}/> Odinstaluj</button>
+          </form>
+
+          {installMsg && (
+            <div style={{ padding: '10px 14px', borderRadius: 8, marginBottom: 16, fontSize: 13,
+              background: installMsg.startsWith('✓') ? 'var(--accent-bg)' : 'rgba(248,113,113,0.1)',
+              color: installMsg.startsWith('✓') ? 'var(--accent)' : 'var(--danger)',
+              border: `1px solid ${installMsg.startsWith('✓') ? 'var(--accent-line)' : 'rgba(248,113,113,0.25)'}`,
+            }}>{installMsg}</div>
+          )}
+
+          {results.length === 0 && !searching && (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-3)', fontSize: 13 }}>
+              <I2 name="search" size={28}/><br/><br/>
+              Wyszukaj pluginy z Hangar i Modrinth.<br/>
+              <span style={{ fontSize: 12, color: 'var(--text-4)' }}>Obsługiwane źródła: Hangar (PaperMC), Modrinth</span>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+            {results.map((p, i) => (
+              <div key={i} className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  {p.icon ? (
+                    <img src={p.icon} alt="" style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                      onError={e => { e.target.style.display='none'; }}/>
+                  ) : (
+                    <div style={{ width: 40, height: 40, borderRadius: 8, background: 'var(--bg-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-4)', flexShrink: 0 }}>
+                      <I2 name="puzzle" size={18}/>
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{p.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-4)' }}>by {p.author}</div>
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, flexShrink: 0,
+                    background: (sourceColor[p.source] || '#888') + '20', color: sourceColor[p.source] || '#888',
+                    border: `1px solid ${(sourceColor[p.source] || '#888')}40`,
+                  }}>{sourceName[p.source] || p.source}</span>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-2)', margin: 0, lineHeight: 1.5, flex: 1,
+                  display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }}>{p.description}</p>
+                {p.downloads > 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--text-4)' }}>
+                    <I2 name="download" size={11}/> {p.downloads.toLocaleString()} pobrań
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {p.url && (
+                    <a href={p.url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{ flex: 1, justifyContent: 'center', textDecoration: 'none' }}>
+                      <I2 name="globe" size={12}/> Strona
+                    </a>
+                  )}
+                  {p.download_url && (
+                    <button className="btn btn-sm btn-primary" style={{ flex: 1, justifyContent: 'center' }}
+                      disabled={installing === p.name}
+                      onClick={() => install(p)}>
+                      <I2 name="download" size={12}/> {installing === p.name ? 'Instalacja…' : 'Zainstaluj'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

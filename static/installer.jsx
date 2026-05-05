@@ -10,25 +10,19 @@ const STEP_DONE    = 4;
 function InstallerModal({ onClose, onAdded }) {
   const [step, setStep] = useState(STEP_TYPE);
   const [serverType, setServerType] = useState('java');
-  const [form, setForm] = useState({
-    name: '', id: '', directory: '', port: '', ram: '2',
-    rconPort: '25575', rconPassword: 'craftpanel',
-  });
+  const [form, setForm] = useState({ name: '', port: '', ram: '2', rconPassword: 'craftpanel' });
   const [versions, setVersions] = useState([]);
   const [selVersion, setSelVersion] = useState('');
   const [bedrockInfo, setBedrockInfo] = useState(null);
   const [jobId, setJobId] = useState(null);
   const [progress, setProgress] = useState({ phase: 'pending', pct: 0, error: '' });
-  const [skipInstall, setSkipInstall] = useState(false);
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const autoId = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const autoId = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'server';
 
-  // Step 2 → 3: fetch versions
   const goToVersion = () => {
-    if (!form.name || !form.directory) return;
-    if (!form.id) setField('id', autoId(form.name));
+    if (!form.name.trim()) return;
     setStep(STEP_VERSION);
     if (serverType === 'java' && versions.length === 0) {
       fetch('/api/install/java/versions').then(r => r.json())
@@ -43,21 +37,28 @@ function InstallerModal({ onClose, onAdded }) {
   };
 
   const startInstall = () => {
+    const id = autoId(form.name);
     const payload = {
       type: serverType,
+      id,
+      name: form.name,
       version: selVersion,
       download_url: bedrockInfo?.download_url || '',
-      directory: form.directory,
+      port: parseInt(form.port) || (serverType === 'bedrock' ? 19132 : 25565),
+      ram: parseInt(form.ram) || 2,
+      rcon_port: 25575,
+      rcon_password: form.rconPassword || 'craftpanel',
     };
     fetch('/api/install/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }).then(r => r.json()).then(d => {
+      if (d.error) { setProgress({ phase: 'error', pct: 0, error: d.error }); setStep(STEP_INSTALL); return; }
       setJobId(d.job_id);
       setStep(STEP_INSTALL);
       watchJob(d.job_id);
-    }).catch(e => setProgress({ phase: 'error', pct: 0, error: String(e) }));
+    }).catch(e => { setStep(STEP_INSTALL); setProgress({ phase: 'error', pct: 0, error: String(e) }); });
   };
 
   const watchJob = (id) => {
@@ -67,43 +68,16 @@ function InstallerModal({ onClose, onAdded }) {
       setProgress({ phase: d.phase, pct: d.pct || 0, error: d.error || '' });
       if (d.phase === 'done' || d.phase === 'error') {
         src.close();
-        if (d.phase === 'done') addServer();
+        if (d.phase === 'done') { onAdded(); setStep(STEP_DONE); }
       }
     };
     src.onerror = () => {
       src.close();
-      setProgress(p => ({ ...p, phase: 'error', error: 'Connection lost' }));
+      setProgress(p => ({ ...p, phase: 'error', error: 'Utracono połączenie' }));
     };
   };
 
-  const addServerDirect = () => {
-    addServer();
-    setStep(STEP_DONE);
-  };
-
-  const addServer = () => {
-    const id = form.id || autoId(form.name);
-    const cfg = {
-      id,
-      name: form.name || id,
-      type: serverType,
-      directory: form.directory,
-      jar: 'server.jar',
-      java_args: [`-Xmx${form.ram}G`, `-Xms${Math.max(1, Math.floor(parseInt(form.ram)/2))}G`],
-      executable: './bedrock_server',
-      port: parseInt(form.port) || (serverType === 'bedrock' ? 19132 : 25565),
-      rcon_port: parseInt(form.rconPort) || 25575,
-      rcon_password: form.rconPassword || 'craftpanel',
-    };
-    fetch('/api/servers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    }).then(() => {
-      onAdded();
-      setStep(STEP_DONE);
-    }).catch(() => {});
-  };
+  const serverId = autoId(form.name);
 
   return (
     <div style={{
@@ -153,11 +127,11 @@ function InstallerModal({ onClose, onAdded }) {
 
         {/* Body */}
         <div style={{ padding: 24, minHeight: 280 }}>
-          {step === STEP_TYPE && <StepType serverType={serverType} setServerType={setServerType}/>}
-          {step === STEP_CONFIG && <StepConfig form={form} setField={setField} serverType={serverType} skipInstall={skipInstall} setSkipInstall={setSkipInstall}/>}
+          {step === STEP_TYPE    && <StepType serverType={serverType} setServerType={setServerType}/>}
+          {step === STEP_CONFIG  && <StepConfig form={form} setField={setField} serverType={serverType} serverId={serverId}/>}
           {step === STEP_VERSION && <StepVersion serverType={serverType} versions={versions} selVersion={selVersion} setSelVersion={setSelVersion} bedrockInfo={bedrockInfo}/>}
           {step === STEP_INSTALL && <StepInstall progress={progress}/>}
-          {step === STEP_DONE && <StepDone onClose={onClose}/>}
+          {step === STEP_DONE    && <StepDone onClose={onClose}/>}
         </div>
 
         {/* Footer */}
@@ -166,20 +140,13 @@ function InstallerModal({ onClose, onAdded }) {
             <button className="btn" onClick={() => step > 0 ? setStep(step - 1) : onClose()}>
               <II name="arrow-left" size={14}/> {step === 0 ? 'Anuluj' : 'Wstecz'}
             </button>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {step === STEP_VERSION && (
-                <button className="btn" onClick={addServerDirect} title="Dodaj bez instalowania plików">
-                  Dodaj bez instalacji
-                </button>
-              )}
-              <button className="btn btn-primary" onClick={() => {
-                if (step === STEP_TYPE) setStep(STEP_CONFIG);
-                else if (step === STEP_CONFIG) goToVersion();
-                else if (step === STEP_VERSION) startInstall();
-              }}>
-                {step === STEP_VERSION ? <><II name="download" size={14}/> Zainstaluj</> : <><II name="arrow-right" size={14}/> Dalej</>}
-              </button>
-            </div>
+            <button className="btn btn-primary" onClick={() => {
+              if (step === STEP_TYPE) setStep(STEP_CONFIG);
+              else if (step === STEP_CONFIG) { if (form.name.trim()) goToVersion(); }
+              else if (step === STEP_VERSION) startInstall();
+            }} disabled={step === STEP_CONFIG && !form.name.trim()}>
+              {step === STEP_VERSION ? <><II name="download" size={14}/> Zainstaluj</> : <><II name="arrow-right" size={14}/> Dalej</>}
+            </button>
           </div>
         )}
       </div>
@@ -189,24 +156,8 @@ function InstallerModal({ onClose, onAdded }) {
 
 function StepType({ serverType, setServerType }) {
   const types = [
-    {
-      id: 'java',
-      label: 'Java Edition',
-      icon: 'coffee',
-      desc: 'Paper MC · Spigot · Vanilla · Forge · Fabric',
-      note: 'Wymagana Java 17+',
-      color: '#4ade80',
-      bg: 'rgba(74,222,128,0.08)',
-    },
-    {
-      id: 'bedrock',
-      label: 'Bedrock Edition',
-      icon: 'layers',
-      desc: 'Oficjalny serwer Mojang · PE · Console · Win10',
-      note: 'Linux x64',
-      color: '#60a5fa',
-      bg: 'rgba(96,165,250,0.08)',
-    },
+    { id: 'java',    label: 'Java Edition',    icon: 'coffee', desc: 'Paper MC · Spigot · Vanilla · Forge · Fabric', note: 'Wymagana Java 17+', color: '#4ade80', bg: 'rgba(74,222,128,0.08)' },
+    { id: 'bedrock', label: 'Bedrock Edition',  icon: 'layers', desc: 'Oficjalny serwer Mojang · PE · Console · Win10', note: 'Linux x64',         color: '#60a5fa', bg: 'rgba(96,165,250,0.08)' },
   ];
   return (
     <div>
@@ -236,17 +187,18 @@ function StepType({ serverType, setServerType }) {
   );
 }
 
-function StepConfig({ form, setField, serverType, skipInstall, setSkipInstall }) {
+function StepConfig({ form, setField, serverType, serverId }) {
   const defaultPort = serverType === 'bedrock' ? '19132' : '25565';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <Row label="Nazwa serwera *">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Row label="Nazwa serwera">
         <input className="input" placeholder="Survival SMP" value={form.name}
           onChange={e => setField('name', e.target.value)} autoFocus/>
       </Row>
-      <Row label="Katalog *">
-        <input className="input mono" placeholder="/opt/minecraft/survival" value={form.directory}
-          onChange={e => setField('directory', e.target.value)}/>
+      <Row label="Katalog">
+        <div className="input" style={{ display: 'flex', alignItems: 'center', color: 'var(--text-3)', cursor: 'default', background: 'var(--bg-0)' }}>
+          <span className="mono" style={{ fontSize: 12 }}>servers/{serverId || '…'}/</span>
+        </div>
       </Row>
       <Row label="Port">
         <input className="input mono" placeholder={defaultPort} value={form.port}
@@ -264,6 +216,10 @@ function StepConfig({ form, setField, serverType, skipInstall, setSkipInstall })
           </Row>
         </>
       )}
+      <div style={{ padding: '10px 14px', background: 'var(--bg-1)', borderRadius: 8, fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <II name="info" size={13}/>
+        Pliki serwera zostaną pobrane do katalogu <span className="mono" style={{ color: 'var(--text-2)' }}>servers/{serverId || '…'}/</span>
+      </div>
     </div>
   );
 }
@@ -282,7 +238,9 @@ function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockI
             <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 4 }} className="mono">{bedrockInfo.download_url}</div>
           </>
         ) : (
-          <div style={{ color: 'var(--text-3)', fontSize: 13 }}>Pobieranie informacji o wersji...</div>
+          <div style={{ color: 'var(--text-3)', fontSize: 13, padding: 40 }}>
+            <II name="loader" size={20}/> Pobieranie informacji o wersji...
+          </div>
         )}
       </div>
     );
@@ -291,9 +249,9 @@ function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockI
     <div>
       <p style={{ color: 'var(--text-3)', fontSize: 13, marginTop: 0 }}>Wybierz wersję Paper MC:</p>
       {versions.length === 0 ? (
-        <div style={{ color: 'var(--text-4)', fontSize: 13 }}>Pobieranie listy wersji...</div>
+        <div style={{ color: 'var(--text-4)', fontSize: 13, padding: '20px 0' }}>Pobieranie listy wersji...</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
           {versions.map(v => (
             <div key={v} onClick={() => setSelVersion(v)} style={{
               padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 13, textAlign: 'center',
@@ -304,7 +262,7 @@ function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockI
           ))}
         </div>
       )}
-      <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--bg-1)', borderRadius: 8, fontSize: 12, color: 'var(--text-3)' }}>
+      <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--bg-1)', borderRadius: 8, fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <II name="info" size={13}/> Pobiera Paper MC z <span className="mono">papermc.io</span> · automatycznie akceptuje EULA
       </div>
     </div>
@@ -313,17 +271,17 @@ function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockI
 
 function StepInstall({ progress }) {
   const phases = {
-    pending: { label: 'Oczekiwanie...', icon: 'clock' },
-    downloading: { label: 'Pobieranie...', icon: 'download' },
-    extracting: { label: 'Rozpakowywanie...', icon: 'package' },
-    setup: { label: 'Konfiguracja...', icon: 'settings' },
-    done: { label: 'Zainstalowano!', icon: 'check-circle' },
-    error: { label: 'Błąd instalacji', icon: 'alert-circle' },
+    pending:     { label: 'Oczekiwanie...',    icon: 'clock' },
+    downloading: { label: 'Pobieranie...',     icon: 'download' },
+    extracting:  { label: 'Rozpakowywanie...', icon: 'package' },
+    setup:       { label: 'Konfiguracja...',   icon: 'settings' },
+    done:        { label: 'Zainstalowano!',    icon: 'check-circle' },
+    error:       { label: 'Błąd instalacji',   icon: 'alert-circle' },
   };
   const ph = phases[progress.phase] || phases.pending;
   const pct = Math.min(100, Math.round(progress.pct || 0));
   const isError = progress.phase === 'error';
-  const isDone = progress.phase === 'done';
+  const isDone  = progress.phase === 'done';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px 0', gap: 20 }}>
@@ -337,8 +295,8 @@ function StepInstall({ progress }) {
       </div>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 16, fontWeight: 600 }}>{ph.label}</div>
-        {isError && <div style={{ fontSize: 13, color: 'var(--danger)', marginTop: 6 }}>{progress.error}</div>}
-        {progress.phase === 'downloading' && progress.pct > 0 && (
+        {isError && <div style={{ fontSize: 13, color: 'var(--danger)', marginTop: 6, maxWidth: 360 }}>{progress.error}</div>}
+        {progress.phase === 'downloading' && pct > 0 && (
           <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>{pct}%</div>
         )}
       </div>
@@ -349,9 +307,7 @@ function StepInstall({ progress }) {
           width: isDone ? '100%' : isError ? '100%' : `${pct}%`,
         }}/>
       </div>
-      {!isError && !isDone && (
-        <div style={{ fontSize: 12, color: 'var(--text-4)' }}>Nie zamykaj okna podczas instalacji</div>
-      )}
+      {!isError && !isDone && <div style={{ fontSize: 12, color: 'var(--text-4)' }}>Nie zamykaj okna podczas instalacji</div>}
     </div>
   );
 }
@@ -363,7 +319,7 @@ function StepDone({ onClose }) {
         <II name="check-circle" size={36}/>
       </div>
       <div>
-        <div style={{ fontSize: 20, fontWeight: 700 }}>Serwer dodany!</div>
+        <div style={{ fontSize: 20, fontWeight: 700 }}>Serwer zainstalowany!</div>
         <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6 }}>
           Serwer pojawił się w dashboardzie. Możesz go teraz uruchomić.
         </div>
@@ -377,9 +333,9 @@ function StepDone({ onClose }) {
 
 function Row({ label, children }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      <label style={{ width: 120, fontSize: 13, color: 'var(--text-2)', flexShrink: 0 }}>{label}</label>
-      <div style={{ flex: 1 }}>{children}</div>
+    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', alignItems: 'center', gap: 12 }}>
+      <label style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500 }}>{label}</label>
+      {children}
     </div>
   );
 }

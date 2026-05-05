@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1423,6 +1424,198 @@ func (a *App) handlePlugins(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, plugins)
 }
 
+// handlePluginSearch proxies to Hangar (Java) or Modrinth API
+func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "not found", 404)
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		jsonResp(w, []any{})
+		return
+	}
+
+	type PluginResult struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Author      string `json:"author"`
+		Version     string `json:"version"`
+		Downloads   int    `json:"downloads"`
+		URL         string `json:"url"`
+		DownloadURL string `json:"download_url"`
+		Icon        string `json:"icon"`
+		Source      string `json:"source"`
+	}
+
+	var results []PluginResult
+	ctx := r.Context()
+
+	if ms.Config.IsJava() {
+		// Hangar API
+		apiURL := fmt.Sprintf("https://hangar.papermc.io/api/v1/projects?query=%s&limit=12&offset=0", url.QueryEscape(q))
+		req2, _ := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		req2.Header.Set("User-Agent", "CraftPanel/1.0")
+		resp, err := http.DefaultClient.Do(req2)
+		if err == nil && resp.StatusCode == 200 {
+			var data struct {
+				Result []struct {
+					Name      string `json:"name"`
+					Namespace struct{ Owner string } `json:"namespace"`
+					Description string `json:"description"`
+					Stats struct{ Downloads int } `json:"stats"`
+					IconURL string `json:"iconUrl"`
+				} `json:"result"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&data) == nil {
+				for _, p := range data.Result {
+					dlURL := fmt.Sprintf("https://hangar.papermc.io/api/v1/projects/%s/%s/latestrelease", p.Namespace.Owner, p.Name)
+					results = append(results, PluginResult{
+						Name: p.Name, Description: p.Description,
+						Author: p.Namespace.Owner, Downloads: p.Stats.Downloads,
+						URL:    fmt.Sprintf("https://hangar.papermc.io/%s/%s", p.Namespace.Owner, p.Name),
+						DownloadURL: dlURL, Icon: p.IconURL, Source: "hangar",
+					})
+				}
+			}
+			resp.Body.Close()
+		}
+		// Also search Modrinth
+		mrURL := fmt.Sprintf("https://api.modrinth.com/v2/search?query=%s&facets=[[\"project_type:plugin\"]]&limit=6", url.QueryEscape(q))
+		req3, _ := http.NewRequestWithContext(ctx, "GET", mrURL, nil)
+		req3.Header.Set("User-Agent", "CraftPanel/1.0")
+		resp2, err := http.DefaultClient.Do(req3)
+		if err == nil && resp2.StatusCode == 200 {
+			var data2 struct {
+				Hits []struct {
+					ProjectID   string `json:"project_id"`
+					Title       string `json:"title"`
+					Description string `json:"description"`
+					Author      string `json:"author"`
+					Downloads   int    `json:"downloads"`
+					IconURL     string `json:"icon_url"`
+				} `json:"hits"`
+			}
+			if json.NewDecoder(resp2.Body).Decode(&data2) == nil {
+				for _, p := range data2.Hits {
+					results = append(results, PluginResult{
+						Name: p.Title, Description: p.Description,
+						Author: p.Author, Downloads: p.Downloads,
+						URL:         fmt.Sprintf("https://modrinth.com/plugin/%s", p.ProjectID),
+						DownloadURL: fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", p.ProjectID),
+						Icon: p.IconURL, Source: "modrinth",
+					})
+				}
+			}
+			resp2.Body.Close()
+		}
+	} else {
+		// Bedrock: MCPEDL via a simple search (limited public API)
+		results = append(results, PluginResult{
+			Name: "Bedrock Add-ons", Description: "Wyszukaj add-ony na MCPEDL.com",
+			URL: "https://mcpedl.com/?s=" + url.QueryEscape(q), Source: "mcpedl",
+		})
+	}
+
+	if results == nil {
+		results = []PluginResult{}
+	}
+	jsonResp(w, results)
+}
+
+// handlePluginInstall downloads a plugin jar into the server's plugins/ directory
+func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "not found", 404)
+		return
+	}
+	var req struct {
+		Name        string `json:"name"`
+		DownloadURL string `json:"download_url"`
+		Source      string `json:"source"`
+		ProjectID   string `json:"project_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErr(w, err.Error(), 400)
+		return
+	}
+	if req.DownloadURL == "" {
+		jsonErr(w, "download_url required", 400)
+		return
+	}
+
+	pluginsDir := filepath.Join(ms.Config.Directory, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+
+	// For Modrinth, resolve latest version download URL first
+	dlURL := req.DownloadURL
+	if req.Source == "modrinth" {
+		ctx := r.Context()
+		apiReq, _ := http.NewRequestWithContext(ctx, "GET", req.DownloadURL+"?loaders=[\"paper\",\"spigot\",\"bukkit\"]&game_versions=[]", nil)
+		apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
+		resp, err := http.DefaultClient.Do(apiReq)
+		if err == nil && resp.StatusCode == 200 {
+			var versions []struct {
+				Files []struct{ URL string; Primary bool } `json:"files"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&versions) == nil && len(versions) > 0 {
+				for _, f := range versions[0].Files {
+					if f.Primary {
+						dlURL = f.URL
+						break
+					}
+				}
+				if dlURL == req.DownloadURL && len(versions[0].Files) > 0 {
+					dlURL = versions[0].Files[0].URL
+				}
+			}
+			resp.Body.Close()
+		}
+	}
+
+	// For Hangar, resolve the actual jar download
+	if req.Source == "hangar" {
+		ctx := r.Context()
+		apiReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
+		apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
+		resp, err := http.DefaultClient.Do(apiReq)
+		if err == nil {
+			var ver struct{ Downloads struct{ PAPER struct{ DownloadURL string `json:"downloadUrl"` } } `json:"downloads"` }
+			if json.NewDecoder(resp.Body).Decode(&ver) == nil && ver.Downloads.PAPER.DownloadURL != "" {
+				dlURL = ver.Downloads.PAPER.DownloadURL
+			}
+			resp.Body.Close()
+		}
+	}
+
+	resp, err := http.Get(dlURL)
+	if err != nil {
+		jsonErr(w, "download failed: "+err.Error(), 500)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		jsonErr(w, fmt.Sprintf("download failed: HTTP %d", resp.StatusCode), 500)
+		return
+	}
+
+	fname := req.Name + ".jar"
+	dest := filepath.Join(pluginsDir, fname)
+	f, err := os.Create(dest)
+	if err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+	defer f.Close()
+	io.Copy(f, resp.Body)
+	jsonResp(w, map[string]string{"status": "ok", "file": fname})
+}
+
 func (a *App) handleFiles(w http.ResponseWriter, r *http.Request) {
 	ms, ok := a.get(r.PathValue("id"))
 	if !ok {
@@ -1781,31 +1974,64 @@ func handleBedrockInfo(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Type      string `json:"type"`
-		Version   string `json:"version"`
+		Type        string `json:"type"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Version     string `json:"version"`
 		DownloadURL string `json:"download_url"`
-		Directory string `json:"directory"`
+		Port        int    `json:"port"`
+		RAM         int    `json:"ram"`
+		RCONPort    int    `json:"rcon_port"`
+		RCONPass    string `json:"rcon_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), 400)
+		jsonErr(w, err.Error(), 400)
 		return
 	}
-	if req.Directory == "" {
-		http.Error(w, "directory required", 400)
+	if req.ID == "" {
+		jsonErr(w, "id required", 400)
 		return
 	}
-	if err := os.MkdirAll(req.Directory, 0755); err != nil {
-		http.Error(w, err.Error(), 500)
+
+	dir := filepath.Join("servers", req.ID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		jsonErr(w, err.Error(), 500)
 		return
+	}
+
+	// Build server config that will be registered after install
+	if req.Port == 0 {
+		if req.Type == "bedrock" {
+			req.Port = 19132
+		} else {
+			req.Port = 25565
+		}
+	}
+	if req.RCONPort == 0 {
+		req.RCONPort = 25575
+	}
+	if req.RCONPass == "" {
+		req.RCONPass = "craftpanel"
+	}
+	if req.RAM < 1 {
+		req.RAM = 2
+	}
+	cfg := ServerConfig{
+		ID: req.ID, Name: req.Name, Type: req.Type,
+		Directory: dir, Jar: "server.jar", Executable: "./bedrock_server",
+		JavaArgs:     []string{fmt.Sprintf("-Xmx%dG", req.RAM), fmt.Sprintf("-Xms%dG", max(1, req.RAM/2))},
+		Port:         req.Port,
+		RCONPort:     req.RCONPort,
+		RCONPassword: req.RCONPass,
 	}
 
 	job := newInstallJob()
 	go func() {
 		var err error
 		if req.Type == "bedrock" {
-			err = installBedrock(job, req.DownloadURL, req.Directory)
+			err = installBedrock(job, req.DownloadURL, dir)
 		} else {
-			err = installJava(job, req.Version, req.Directory)
+			err = installJava(job, req.Version, dir)
 		}
 		job.mu.Lock()
 		if err != nil {
@@ -1813,6 +2039,14 @@ func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 			job.errMsg = err.Error()
 		} else {
 			job.phase = "done"
+			// Auto-register server after successful install
+			a.mu.Lock()
+			if _, exists := a.servers[cfg.ID]; !exists {
+				ms := NewManagedServer(cfg, a.db)
+				a.servers[cfg.ID] = ms
+			}
+			a.mu.Unlock()
+			a.saveConfig()
 		}
 		job.emit()
 		job.mu.Unlock()
@@ -1828,6 +2062,13 @@ func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 	}
 	installJobsMu.RUnlock()
 	jsonResp(w, map[string]string{"job_id": id})
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func handleInstallJobStream(w http.ResponseWriter, r *http.Request) {
@@ -2139,6 +2380,8 @@ func main() {
 	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.authMW(app.handleConsoleStream))
 	mux.HandleFunc("GET /api/servers/{id}/players", app.authMW(app.handlePlayers))
 	mux.HandleFunc("GET /api/servers/{id}/plugins", app.authMW(app.handlePlugins))
+	mux.HandleFunc("GET /api/servers/{id}/plugins/search", app.authMW(app.handlePluginSearch))
+	mux.HandleFunc("POST /api/servers/{id}/plugins/install", app.authMW(app.handlePluginInstall))
 	mux.HandleFunc("GET /api/servers/{id}/files", app.authMW(app.handleFiles))
 	mux.HandleFunc("GET /api/servers/{id}/files/content", app.authMW(app.handleFileContent))
 	mux.HandleFunc("GET /api/servers/{id}/backups", app.authMW(app.handleBackups))
