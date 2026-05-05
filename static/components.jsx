@@ -209,7 +209,7 @@ function ServerBadge({ kind, size = 44 }) {
 function Sparkline({ data, color = 'var(--accent)', height = 50, max, min = 0, fill = true }) {
   if (!data || data.length < 2) return <div style={{ height, width: '100%' }}/>;
   const w = 200;
-  const M = max ?? Math.max(...data) * 1.1 || 1;
+  const M = max ?? (Math.max(...data) * 1.1 || 1);
   const m = min;
   const stepX = w / (data.length - 1);
   const pts = data.map((v, i) => {
