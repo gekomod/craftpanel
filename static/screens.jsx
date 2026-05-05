@@ -398,7 +398,7 @@ function SystemHealthCard() {
 // ─── SERVER DETAIL with 7 tabs ─────────────────────────────────────────────
 function ServerDetailScreen({ serverId, servers, navigate }) {
   const onBack = () => navigate && navigate({ screen: 'dashboard' });
-  const server = servers.find(s => s.id === serverId) || servers[0];
+  const server = servers.find(s => s.id === serverId);
   const [tab, setTab] = useState('overview');
   const [tnt, setTnt] = useState(false);
   const [statHistory, setStatHistory] = useState([]);
@@ -468,9 +468,18 @@ function ServerDetailScreen({ serverId, servers, navigate }) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn" onClick={() => doAction('restart')}><Icon name="restart" size={14}/> Restart</button>
-          <button className="btn btn-danger" onClick={() => doAction('stop')}><Icon name="stop" size={14}/> Stop</button>
-          <button className="btn btn-icon btn-danger" onClick={triggerKill} title="Force kill"><Icon name="tnt" size={14}/></button>
+          {server.status === 'offline' && server.has_files && (
+            <button className="btn btn-primary" onClick={() => doAction('start')}><Icon name="play" size={14}/> Uruchom</button>
+          )}
+          {server.status === 'online' && (
+            <button className="btn" onClick={() => doAction('restart')}><Icon name="restart" size={14}/> Restart</button>
+          )}
+          {server.status === 'online' && (
+            <button className="btn btn-danger" onClick={() => doAction('stop')}><Icon name="stop" size={14}/> Stop</button>
+          )}
+          {server.status === 'online' && (
+            <button className="btn btn-icon btn-danger" onClick={triggerKill} title="Force kill"><Icon name="tnt" size={14}/></button>
+          )}
         </div>
       </div>
 
@@ -588,7 +597,7 @@ function ConsoleTab({ serverId }) {
   const ref = useRef(null);
 
   useEffect(() => {
-    const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`);
+    const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`, { withCredentials: true });
     src.onmessage = (e) => {
       try {
         const line = JSON.parse(e.data);

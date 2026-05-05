@@ -1909,14 +1909,13 @@ var (
 	installJobs   = map[string]*installJob{}
 )
 
-func newInstallJob() *installJob {
+func newInstallJob() (*installJob, string) {
 	j := &installJob{phase: "pending", clients: make(map[chan string]struct{})}
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	installJobsMu.Lock()
 	installJobs[id] = j
-	installJobs["latest"] = j
 	installJobsMu.Unlock()
-	return j
+	return j, id
 }
 
 type progressReader struct {
@@ -1959,28 +1958,54 @@ func handleJavaVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleBedrockInfo(w http.ResponseWriter, r *http.Request) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, _ := http.NewRequest("GET", "https://www.minecraft.net/en-us/download/server/bedrock/", nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, err.Error(), 502)
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	client := &http.Client{Timeout: 15 * time.Second}
 
-	// Extract Linux download URL
-	re := regexp.MustCompile(`https://minecraft\.azureedge\.net/bin-linux/bedrock-server-([\d.]+)\.zip`)
-	matches := re.FindStringSubmatch(string(body))
-	if len(matches) < 2 {
-		http.Error(w, "could not find download URL", 502)
-		return
+	// Try minecraft.net page first
+	urls := []string{
+		"https://www.minecraft.net/en-us/download/server/bedrock/",
+		"https://www.minecraft.net/download/server/bedrock/",
 	}
-	jsonResp(w, map[string]string{
-		"version":      matches[1],
-		"download_url": matches[0],
-	})
+	// Broader regex covering different CDN patterns
+	re := regexp.MustCompile(`https://[^"'\s<>]+bedrock-server-([\d.]+)\.zip`)
+
+	for _, pageURL := range urls {
+		req2, _ := http.NewRequest("GET", pageURL, nil)
+		req2.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req2.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		resp, err := client.Do(req2)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		matches := re.FindStringSubmatch(string(body))
+		if len(matches) >= 2 {
+			jsonResp(w, map[string]string{
+				"version":      matches[1],
+				"download_url": matches[0],
+			})
+			return
+		}
+	}
+
+	// Fallback: try fetching from a version JSON file
+	resp2, err := client.Get("https://raw.githubusercontent.com/nicowillis/minecraft-bedrock-updater/main/version.json")
+	if err == nil {
+		var data struct {
+			Linux string `json:"linux"`
+		}
+		if json.NewDecoder(resp2.Body).Decode(&data) == nil && data.Linux != "" {
+			resp2.Body.Close()
+			ver := regexp.MustCompile(`bedrock-server-([\d.]+)\.zip`).FindStringSubmatch(data.Linux)
+			if len(ver) >= 2 {
+				jsonResp(w, map[string]string{"version": ver[1], "download_url": data.Linux})
+				return
+			}
+		}
+		resp2.Body.Close()
+	}
+
+	jsonErr(w, "Nie można pobrać adresu URL Bedrock. Sprawdź połączenie internetowe serwera.", 502)
 }
 
 func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
@@ -2036,7 +2061,7 @@ func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 		RCONPassword: req.RCONPass,
 	}
 
-	job := newInstallJob()
+	job, jobID := newInstallJob()
 	go func() {
 		var err error
 		if req.Type == "bedrock" {
@@ -2050,7 +2075,6 @@ func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 			job.errMsg = err.Error()
 		} else {
 			job.phase = "done"
-			// Auto-register server after successful install
 			a.mu.Lock()
 			if _, exists := a.servers[cfg.ID]; !exists {
 				ms := NewManagedServer(cfg, a.db)
@@ -2062,17 +2086,7 @@ func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
 		job.emit()
 		job.mu.Unlock()
 	}()
-
-	installJobsMu.RLock()
-	var id string
-	for k, v := range installJobs {
-		if v == job {
-			id = k
-			break
-		}
-	}
-	installJobsMu.RUnlock()
-	jsonResp(w, map[string]string{"job_id": id})
+	jsonResp(w, map[string]string{"job_id": jobID})
 }
 
 func max(a, b int) int {

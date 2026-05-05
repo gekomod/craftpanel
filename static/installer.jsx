@@ -62,7 +62,7 @@ function InstallerModal({ onClose, onAdded }) {
   };
 
   const watchJob = (id) => {
-    const src = new EventSource(`/api/install/jobs/${id}/stream`);
+    const src = new EventSource(`/api/install/jobs/${id}/stream`, { withCredentials: true });
     src.onmessage = (e) => {
       const d = JSON.parse(e.data);
       setProgress({ phase: d.phase, pct: d.pct || 0, error: d.error || '' });
