@@ -120,8 +120,8 @@ function PluginsTab({ serverId, defaultTab }) {
     setInstalling('');
   };
 
-  const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa' };
-  const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL' };
+  const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa', curseforge: '#f16436' };
+  const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL', curseforge: 'CurseForge' };
   const isMCPEDLFallback = (p) => p.source === 'mcpedl' && p.url && p.url.includes('?s=');
 
   return (
@@ -202,7 +202,7 @@ function PluginsTab({ serverId, defaultTab }) {
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-3)', fontSize: 13 }}>
               <I2 name="search" size={28}/><br/><br/>
               Wyszukaj pluginy / dodatki Bedrock.<br/>
-              <span style={{ fontSize: 12, color: 'var(--text-4)' }}>Java: Hangar, Modrinth · Bedrock: Modrinth, MCPEDL</span>
+              <span style={{ fontSize: 12, color: 'var(--text-4)' }}>Java: Hangar, Modrinth · Bedrock: CurseForge, Modrinth, MCPEDL</span>
             </div>
           )}
 

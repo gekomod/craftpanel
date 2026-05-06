@@ -1602,6 +1602,58 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			respMR.Body.Close()
 		}
 
+		// Bedrock: 3) CurseForge (minecraft-bedrock, class=addons, gameId=432, classId=4484)
+		cfURL := fmt.Sprintf("https://www.curseforge.com/api/v1/mods/search?gameId=432&classId=4484&searchFilter=%s&pageSize=10&sortField=2&sortOrder=desc", url.QueryEscape(q))
+		reqCF, _ := http.NewRequestWithContext(ctx, "GET", cfURL, nil)
+		reqCF.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+		reqCF.Header.Set("Accept", "application/json")
+		if respCF, err := client2.Do(reqCF); err == nil && respCF.StatusCode == 200 {
+			var cfData struct {
+				Data []struct {
+					ID      int    `json:"id"`
+					Name    string `json:"name"`
+					Summary string `json:"summary"`
+					Links   struct {
+						WebsiteURL string `json:"websiteUrl"`
+					} `json:"links"`
+					Logo struct {
+						ThumbnailURL string `json:"thumbnailUrl"`
+					} `json:"logo"`
+					DownloadCount    float64 `json:"downloadCount"`
+					LatestFilesIndexes []struct {
+						FileID   int    `json:"fileId"`
+						Filename string `json:"filename"`
+					} `json:"latestFilesIndexes"`
+					Authors []struct{ Name string } `json:"authors"`
+				} `json:"data"`
+			}
+			if json.NewDecoder(respCF.Body).Decode(&cfData) == nil {
+				for _, p := range cfData.Data {
+					author := ""
+					if len(p.Authors) > 0 {
+						author = p.Authors[0].Name
+					}
+					dlURL := ""
+					if len(p.LatestFilesIndexes) > 0 {
+						fi := p.LatestFilesIndexes[0]
+						// CurseForge CDN URL: /files/{id/1000}/{id%1000 padded}/{filename}
+						dlURL = fmt.Sprintf("https://www.curseforge.com/api/v1/mods/%d/files/%d/download", p.ID, fi.FileID)
+					}
+					results = append(results, PluginResult{
+						Name:        p.Name,
+						Description: p.Summary,
+						Author:      author,
+						Downloads:   int(p.DownloadCount),
+						URL:         p.Links.WebsiteURL,
+						DownloadURL: dlURL,
+						Icon:        p.Logo.ThumbnailURL,
+						Source:      "curseforge",
+					})
+				}
+			}
+			respCF.Body.Close()
+		}
+
 		// Manual fallback link always at the end
 		results = append(results, PluginResult{
 			Name:        "Szukaj na MCPEDL",
@@ -1700,6 +1752,17 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dlURL = scraped
+
+	case "curseforge":
+		// CurseForge download endpoint redirects to the actual CDN file — follow it
+		cfReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
+		cfReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+		cfReq.Header.Set("Accept", "*/*")
+		if cfResp, err := http.DefaultClient.Do(cfReq); err == nil {
+			cfResp.Body.Close()
+			// After following redirects the final URL is the CDN link
+			dlURL = cfResp.Request.URL.String()
+		}
 	}
 
 	// Download the file
