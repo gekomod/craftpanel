@@ -2,27 +2,39 @@
 const { useState, useEffect, useCallback, useRef } = React;
 const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
-function IconRow({ value, max, fullColor, emptyColor, icon, emptyIcon }) {
-  const total = Math.round(max / 2);
-  const full  = Math.floor(value / 2);
-  const half  = (value % 2) >= 1 ? 1 : 0;
-  const empty = total - full - half;
-  return (
-    <div style={{ display: 'flex', gap: 1, lineHeight: 1 }}>
-      {Array.from({ length: full  }).map((_, i) => <span key={'f'+i} style={{ fontSize: 10, color: fullColor }}>{icon}</span>)}
-      {half === 1 &&                                 <span style={{ fontSize: 10, color: fullColor, opacity: 0.5 }}>{icon}</span>}
-      {Array.from({ length: empty }).map((_, i) => <span key={'e'+i} style={{ fontSize: 10, color: emptyColor }}>{emptyIcon || icon}</span>)}
-    </div>
-  );
-}
-
 function PlayerStats({ p }) {
   if (!p.max_health) return <span style={{ color: 'var(--text-4)', fontSize: 11 }}>—</span>;
+  const mkRow = (value, max, fullColor, fullIcon, emptyIcon, emptyColor) => {
+    const total = Math.round(max / 2);
+    const full  = Math.floor(value / 2);
+    const half  = (value % 2) >= 1 ? 1 : 0;
+    const empty = total - full - half;
+    return (
+      <div style={{ display: 'flex', gap: 1, lineHeight: 1 }}>
+        {Array.from({ length: full  }).map((_, i) => <span key={'f'+i} style={{ fontSize: 11, color: fullColor }}>{fullIcon}</span>)}
+        {half === 1 &&                                 <span style={{ fontSize: 11, color: fullColor, opacity: 0.5 }}>{fullIcon}</span>}
+        {Array.from({ length: empty }).map((_, i) => <span key={'e'+i} style={{ fontSize: 11, color: emptyColor }}>{emptyIcon}</span>)}
+      </div>
+    );
+  };
+  const mkEmojiRow = (value, max, emoji) => {
+    const total = Math.round(max / 2);
+    const full  = Math.floor(value / 2);
+    const half  = (value % 2) >= 1 ? 1 : 0;
+    const empty = total - full - half;
+    return (
+      <div style={{ display: 'flex', gap: 0, lineHeight: 1 }}>
+        {Array.from({ length: full  }).map((_, i) => <span key={'f'+i} style={{ fontSize: 10 }}>{emoji}</span>)}
+        {half === 1 &&                                 <span style={{ fontSize: 10, filter: 'grayscale(0.5) opacity(0.55)' }}>{emoji}</span>}
+        {Array.from({ length: empty }).map((_, i) => <span key={'e'+i} style={{ fontSize: 10, filter: 'grayscale(1) opacity(0.2)' }}>{emoji}</span>)}
+      </div>
+    );
+  };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <IconRow value={p.health}  max={p.max_health} fullColor="#ef4444" emptyColor="var(--bg-3)" icon="♥" emptyIcon="♡"/>
-      {p.food != null  && <IconRow value={p.food}   max={20}           fullColor="#a3e635" emptyColor="var(--bg-3)" icon="◆" emptyIcon="◇"/>}
-      {p.armor > 0     && <IconRow value={p.armor}  max={20}           fullColor="#93c5fd" emptyColor="var(--bg-3)" icon="🛡" emptyIcon="◇"/>}
+      {mkRow(p.health, p.max_health, '#ef4444', '♥', '♡', 'var(--bg-3)')}
+      {p.food  != null && mkEmojiRow(p.food,  20, '🍗')}
+      {p.armor > 0     && mkRow(p.armor, 20, '#93c5fd', '🛡', '◇', 'var(--bg-3)')}
     </div>
   );
 }
