@@ -1603,23 +1603,23 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			respMR.Body.Close()
 		}
 
-		// Bedrock: 3) CurseForge
+		// Bedrock: 3) CurseForge (requires API key)
 		a.mu.RLock()
 		cfKey := a.config.CurseForgeAPIKey
 		a.mu.RUnlock()
-		var cfBase string
-		if cfKey != "" {
-			cfBase = "https://api.curseforge.com/v1"
+		if cfKey == "" {
+			results = append(results, PluginResult{
+				Name:        "CurseForge — wymagany klucz API",
+				Description: "Ustaw bezpłatny klucz API CurseForge w Ustawieniach panelu aby przeszukiwać tysiące dodatków Bedrock.",
+				URL:         "https://console.curseforge.com",
+				Source:      "curseforge-setup",
+			})
 		} else {
-			cfBase = "https://www.curseforge.com/api/v1"
-		}
-		cfURL := fmt.Sprintf("%s/mods/search?gameId=432&classId=4484&searchFilter=%s&pageSize=10&sortField=2&sortOrder=desc", cfBase, url.QueryEscape(q))
+		cfURL := fmt.Sprintf("https://api.curseforge.com/v1/mods/search?gameId=432&classId=4484&searchFilter=%s&pageSize=10&sortField=2&sortOrder=desc", url.QueryEscape(q))
 		reqCF, _ := http.NewRequestWithContext(ctx, "GET", cfURL, nil)
-		reqCF.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+		reqCF.Header.Set("User-Agent", "CraftPanel/1.0")
 		reqCF.Header.Set("Accept", "application/json")
-		if cfKey != "" {
-			reqCF.Header.Set("x-api-key", cfKey)
-		}
+		reqCF.Header.Set("x-api-key", cfKey)
 		if respCF, err := client2.Do(reqCF); err == nil && respCF.StatusCode == 200 {
 			var cfData struct {
 				Data []struct {
@@ -1666,6 +1666,7 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			respCF.Body.Close()
 		}
+		} // end cfKey != ""
 
 		// Manual fallback link always at the end
 		results = append(results, PluginResult{

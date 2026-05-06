@@ -123,6 +123,7 @@ function PluginsTab({ serverId, defaultTab }) {
   const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa', curseforge: '#f16436' };
   const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL', curseforge: 'CurseForge' };
   const isMCPEDLFallback = (p) => p.source === 'mcpedl' && p.url && p.url.includes('?s=');
+  const isCFSetup = (p) => p.source === 'curseforge-setup';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
@@ -207,7 +208,22 @@ function PluginsTab({ serverId, defaultTab }) {
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-            {results.map((p, i) => (
+            {results.map((p, i) => isCFSetup(p) ? (
+              <div key={i} style={{
+                gridColumn: '1 / -1', padding: '12px 16px', borderRadius: 10,
+                background: 'rgba(241,100,54,0.07)', border: '1px solid rgba(241,100,54,0.25)',
+                display: 'flex', alignItems: 'center', gap: 12, fontSize: 13,
+              }}>
+                <span style={{ fontSize: 20 }}>🧡</span>
+                <div style={{ flex: 1 }}>
+                  <strong style={{ color: '#f16436' }}>CurseForge</strong>
+                  <span style={{ color: 'var(--text-2)', marginLeft: 8 }}>{p.description}</span>
+                </div>
+                <a href={p.url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{ textDecoration: 'none', flexShrink: 0, borderColor: '#f16436', color: '#f16436' }}>
+                  Pobierz klucz →
+                </a>
+              </div>
+            ) : (
               <div key={i} className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                   {p.icon ? (
