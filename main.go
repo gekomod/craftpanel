@@ -97,6 +97,8 @@ type Player struct {
 	MaxHealth  float64 `json:"max_health,omitempty"`
 	Ping       int     `json:"ping,omitempty"`
 	World      string  `json:"world,omitempty"`
+	Food       float64 `json:"food,omitempty"`
+	Armor      float64 `json:"armor,omitempty"`
 }
 
 type Plugin struct {
@@ -679,6 +681,8 @@ type PlayerHealthData struct {
 	MaxHealth float64 `json:"max_health"`
 	Ping      int     `json:"ping"`
 	World     string  `json:"world"`
+	Food      float64 `json:"food"`
+	Armor     float64 `json:"armor"`
 }
 
 func NewManagedServer(cfg ServerConfig, db *DB) *ManagedServer {
@@ -806,13 +810,21 @@ func (s *ManagedServer) readOutput(r io.Reader) {
 		// Track players from logs
 		s.trackPlayerFromLog(raw)
 		// Parse health data emitted by CraftPanel Script API behavior pack
-		// Format: CRAFTPANEL:<name>:<health>:<max_health>:<ping>:<world>
+		// Format: CRAFTPANEL:<name>:<health>:<max_health>:<ping>:<world>:<food>:<armor>
 		if idx := strings.Index(raw, "CRAFTPANEL:"); idx >= 0 {
-			parts := strings.SplitN(raw[idx+len("CRAFTPANEL:"):], ":", 5)
-			if len(parts) == 5 {
+			parts := strings.SplitN(raw[idx+len("CRAFTPANEL:"):], ":", 7)
+			if len(parts) >= 5 {
 				health, _ := strconv.ParseFloat(parts[1], 64)
 				maxHealth, _ := strconv.ParseFloat(parts[2], 64)
 				ping, _ := strconv.Atoi(parts[3])
+				food := 20.0
+				armor := 0.0
+				if len(parts) >= 6 {
+					food, _ = strconv.ParseFloat(parts[5], 64)
+				}
+				if len(parts) >= 7 {
+					armor, _ = strconv.ParseFloat(parts[6], 64)
+				}
 				if s.healthData == nil {
 					s.healthData = make(map[string]PlayerHealthData)
 				}
@@ -821,6 +833,8 @@ func (s *ManagedServer) readOutput(r io.Reader) {
 					MaxHealth: maxHealth,
 					Ping:      ping,
 					World:     parts[4],
+					Food:      food,
+					Armor:     armor,
 				}
 			}
 		}
@@ -1520,16 +1534,40 @@ func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
 
 	// No server-net / Beta APIs needed — data is emitted via console.log
 	// and parsed by CraftPanel directly from the server output.
-	script := `import { world, system } from "@minecraft/server";
+	script := `import { world, system, EquipmentSlot } from "@minecraft/server";
+
+const ARMOR_VALUES = {
+  "minecraft:leather_helmet":6,"minecraft:leather_chestplate":8,"minecraft:leather_leggings":6,"minecraft:leather_boots":4,
+  "minecraft:chainmail_helmet":5,"minecraft:chainmail_chestplate":12,"minecraft:chainmail_leggings":8,"minecraft:chainmail_boots":4,
+  "minecraft:iron_helmet":6,"minecraft:iron_chestplate":15,"minecraft:iron_leggings":12,"minecraft:iron_boots":4,
+  "minecraft:golden_helmet":5,"minecraft:golden_chestplate":12,"minecraft:golden_leggings":6,"minecraft:golden_boots":4,
+  "minecraft:diamond_helmet":8,"minecraft:diamond_chestplate":24,"minecraft:diamond_leggings":14,"minecraft:diamond_boots":8,
+  "minecraft:netherite_helmet":10,"minecraft:netherite_chestplate":25,"minecraft:netherite_leggings":16,"minecraft:netherite_boots":10
+};
+const ARMOR_SLOTS = [EquipmentSlot.Head, EquipmentSlot.Chest, EquipmentSlot.Legs, EquipmentSlot.Feet];
 
 system.runInterval(() => {
   for (const player of world.getAllPlayers()) {
     const hc = player.getComponent("health");
-    const health = hc ? hc.currentValue : 20;
+    const health    = hc ? hc.currentValue : 20;
     const maxHealth = hc ? hc.effectiveMax : 20;
-    const ping = player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0;
-    const dim = player.dimension.id.replace("minecraft:", "");
-    console.log("CRAFTPANEL:" + player.name + ":" + health + ":" + maxHealth + ":" + ping + ":" + dim);
+    const ping      = player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0;
+    const dim       = player.dimension.id.replace("minecraft:", "");
+    const fc        = player.getComponent("food");
+    const food      = fc ? fc.foodLevel : 20;
+    let armor = 0;
+    try {
+      const eq = player.getComponent("equippable");
+      if (eq) {
+        for (const slot of ARMOR_SLOTS) {
+          const item = eq.getEquipment(slot);
+          if (item) armor += (ARMOR_VALUES[item.typeId] || 0);
+        }
+      }
+    } catch(e) {}
+    // Clamp armor to 0-20 (20 = full 10 icons)
+    armor = Math.min(20, armor);
+    console.log("CRAFTPANEL:" + player.name + ":" + health + ":" + maxHealth + ":" + ping + ":" + dim + ":" + food + ":" + armor);
   }
 }, 40);
 `
@@ -1681,6 +1719,8 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 			players[i].MaxHealth = hd.MaxHealth
 			players[i].Ping = hd.Ping
 			players[i].World = hd.World
+			players[i].Food = hd.Food
+			players[i].Armor = hd.Armor
 		}
 	}
 

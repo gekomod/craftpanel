@@ -2,33 +2,27 @@
 const { useState, useEffect, useCallback, useRef } = React;
 const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
-function HealthBar({ value, max }) {
-  if (!value || !max) return <span style={{ color: 'var(--text-4)', fontSize: 12 }}>—</span>;
-  const totalHearts = Math.round(max / 2);
-  const fullHearts  = Math.floor(value / 2);
-  const halfHeart   = (value % 2) >= 1 ? 1 : 0;
-  const emptyHearts = totalHearts - fullHearts - halfHeart;
-  const pct = value / max;
-  const heartColor = pct > 0.5 ? '#ef4444' : pct > 0.25 ? '#f97316' : '#dc2626';
-  // Two rows of 5 hearts max to stay compact
-  const hearts = [
-    ...Array.from({ length: fullHearts  }, () => ({ type: 'full'  })),
-    ...Array.from({ length: halfHeart   }, () => ({ type: 'half'  })),
-    ...Array.from({ length: emptyHearts }, () => ({ type: 'empty' })),
-  ].slice(0, totalHearts);
+function IconRow({ value, max, fullColor, emptyColor, icon, emptyIcon }) {
+  const total = Math.round(max / 2);
+  const full  = Math.floor(value / 2);
+  const half  = (value % 2) >= 1 ? 1 : 0;
+  const empty = total - full - half;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-      {[0, 1].map(row => (
-        <div key={row} style={{ display: 'flex', gap: 1 }}>
-          {hearts.slice(row * 5, row * 5 + 5).map((h, i) => (
-            <span key={i} style={{ fontSize: 11, lineHeight: 1,
-              color: h.type === 'full' ? heartColor : h.type === 'half' ? '#fca5a5' : 'var(--bg-3)',
-              textShadow: h.type !== 'empty' ? '0 0 1px rgba(0,0,0,0.4)' : 'none' }}>
-              {h.type === 'empty' ? '♡' : '♥'}
-            </span>
-          ))}
-        </div>
-      ))}
+    <div style={{ display: 'flex', gap: 1, lineHeight: 1 }}>
+      {Array.from({ length: full  }).map((_, i) => <span key={'f'+i} style={{ fontSize: 10, color: fullColor }}>{icon}</span>)}
+      {half === 1 &&                                 <span style={{ fontSize: 10, color: fullColor, opacity: 0.5 }}>{icon}</span>}
+      {Array.from({ length: empty }).map((_, i) => <span key={'e'+i} style={{ fontSize: 10, color: emptyColor }}>{emptyIcon || icon}</span>)}
+    </div>
+  );
+}
+
+function PlayerStats({ p }) {
+  if (!p.max_health) return <span style={{ color: 'var(--text-4)', fontSize: 11 }}>—</span>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <IconRow value={p.health}  max={p.max_health} fullColor="#ef4444" emptyColor="var(--bg-3)" icon="♥" emptyIcon="♡"/>
+      {p.food != null  && <IconRow value={p.food}   max={20}           fullColor="#a3e635" emptyColor="var(--bg-3)" icon="◆" emptyIcon="◇"/>}
+      {p.armor > 0     && <IconRow value={p.armor}  max={20}           fullColor="#93c5fd" emptyColor="var(--bg-3)" icon="🛡" emptyIcon="◇"/>}
     </div>
   );
 }
@@ -146,7 +140,7 @@ function PlayersTab({ serverId }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--bg-1)' }}>
-                <Th>Gracz</Th><Th>Status</Th><Th>Świat</Th><Th>Ping</Th><Th>Health</Th><Th>Czas sesji</Th><Th align="right">Akcje</Th>
+                <Th>Gracz</Th><Th>Status</Th><Th>Świat / Ping</Th><Th>Stats</Th><Th>Czas sesji</Th><Th align="right">Akcje</Th>
               </tr>
             </thead>
             <tbody>
@@ -169,9 +163,11 @@ function PlayersTab({ serverId }) {
                       {p.op && <span style={{ fontSize: 10, background: 'rgba(248,113,113,0.15)', color: '#fca5a5', padding: '1px 5px', borderRadius: 4, display:'inline-block' }}>OP</span>}
                     </div>
                   </Td>
-                  <Td><span className="mono" style={{ fontSize: 12 }}>{p.world || '—'}</span></Td>
-                  <Td><span className="mono" style={{ color: p.ping > 150 ? '#f87171' : p.ping > 80 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping != null && p.ping >= 0 && p.max_health > 0 ? `${p.ping}ms` : '—'}</span></Td>
-                  <Td><HealthBar value={p.health} max={p.max_health}/></Td>
+                  <Td>
+                    <div style={{ fontSize: 12 }}>{p.world || '—'}</div>
+                    {p.max_health > 0 && <div style={{ fontSize: 11, marginTop: 2, fontFamily: 'monospace', color: p.ping > 150 ? '#f87171' : p.ping > 80 ? '#fbbf24' : 'var(--text-3)' }}>{p.ping}ms</div>}
+                  </Td>
+                  <Td><PlayerStats p={p}/></Td>
                   <Td><span className="mono" style={{ color: p.online ? 'var(--online)' : 'var(--text-4)' }}>{p.playtime || '—'}</span></Td>
                   <Td align="right">
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
