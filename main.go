@@ -792,6 +792,25 @@ func (s *ManagedServer) readOutput(r io.Reader) {
 		}
 		// Track players from logs
 		s.trackPlayerFromLog(raw)
+		// Parse health data emitted by CraftPanel Script API behavior pack
+		// Format: CRAFTPANEL:<name>:<health>:<max_health>:<ping>:<world>
+		if idx := strings.Index(raw, "CRAFTPANEL:"); idx >= 0 {
+			parts := strings.SplitN(raw[idx+len("CRAFTPANEL:"):], ":", 5)
+			if len(parts) == 5 {
+				health, _ := strconv.ParseFloat(parts[1], 64)
+				maxHealth, _ := strconv.ParseFloat(parts[2], 64)
+				ping, _ := strconv.Atoi(parts[3])
+				if s.healthData == nil {
+					s.healthData = make(map[string]PlayerHealthData)
+				}
+				s.healthData[parts[0]] = PlayerHealthData{
+					Health:    health,
+					MaxHealth: maxHealth,
+					Ping:      ping,
+					World:     parts[4],
+				}
+			}
+		}
 
 		if len(s.lines) >= 2000 {
 			s.lines = s.lines[500:]
@@ -1395,11 +1414,11 @@ func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
 	baseURL := fmt.Sprintf("%s://%s", scheme, host)
 	healthURL := fmt.Sprintf("%s/api/servers/%s/health", baseURL, ms.Config.ID)
 
-	manifest := fmt.Sprintf(`{
+	manifest := `{
   "format_version": 2,
   "header": {
     "name": "CraftPanel Health Monitor",
-    "description": "Sends player health/ping/world data to CraftPanel dashboard",
+    "description": "Reports player health/ping/world to CraftPanel via console.log",
     "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "version": [1, 0, 0],
     "min_engine_version": [1, 20, 0]
@@ -1414,36 +1433,26 @@ func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
     }
   ],
   "dependencies": [
-    { "module_name": "@minecraft/server", "version": "1.13.0" },
-    { "module_name": "@minecraft/server-net", "version": "1.0.0-beta" }
+    { "module_name": "@minecraft/server", "version": "1.13.0" }
   ]
-}`)
+}`
 
-	script := fmt.Sprintf(`import { world, system } from "@minecraft/server";
-import { http, HttpRequest, HttpRequestMethod, HttpHeader } from "@minecraft/server-net";
-
-const HEALTH_URL = "%s";
+	// No server-net / Beta APIs needed — data is emitted via console.log
+	// and parsed by CraftPanel directly from the server output.
+	script := `import { world, system } from "@minecraft/server";
 
 system.runInterval(() => {
-  const data = [];
   for (const player of world.getAllPlayers()) {
     const hc = player.getComponent("health");
-    data.push({
-      name: player.name,
-      health: hc ? hc.currentValue : 20,
-      max_health: hc ? hc.effectiveMax : 20,
-      ping: player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0,
-      world: player.dimension.id.replace("minecraft:", "")
-    });
+    const health = hc ? hc.currentValue : 20;
+    const maxHealth = hc ? hc.effectiveMax : 20;
+    const ping = player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0;
+    const dim = player.dimension.id.replace("minecraft:", "");
+    console.log("CRAFTPANEL:" + player.name + ":" + health + ":" + maxHealth + ":" + ping + ":" + dim);
   }
-  if (data.length === 0) return;
-  const req = new HttpRequest(HEALTH_URL);
-  req.method = HttpRequestMethod.Post;
-  req.body = JSON.stringify(data);
-  req.addHeader("Content-Type", "application/json");
-  http.request(req);
-}, 40); // every 2 seconds (40 ticks)
-`, healthURL)
+}, 40);
+`
+	_ = healthURL // no longer needed, kept for reference
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
