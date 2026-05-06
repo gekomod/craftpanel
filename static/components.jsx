@@ -1,7 +1,172 @@
 // CraftPanel — UI primitive components
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-// ─── Icons (Phosphor-style) ───────────────────────────────────────────────────
+// ─── v3 Pixel-art blocks, characters, heads ─────────────────────────────────
+function Block({ kind = 'grass', size = 28 }) {
+  const blocks = {
+    grass:    { top: '#5fa83b', side: '#79553a', light: '#7bc54e', dark: '#3b6a23' },
+    dirt:     { top: '#79553a', side: '#79553a', light: '#8e6849', dark: '#5e3f29' },
+    stone:    { top: '#8a8a8a', side: '#6b6b6b', light: '#a0a0a0', dark: '#5a5a5a' },
+    cobble:   { top: '#888',    side: '#5b5b5b', light: '#aaa',    dark: '#444' },
+    diamond:  { top: '#5cdbd5', side: '#3a8a86', light: '#88e8e2', dark: '#1f5e5a' },
+    gold:     { top: '#fdc500', side: '#a88800', light: '#ffe050', dark: '#7a6000' },
+    iron:     { top: '#d8d8d8', side: '#8a8a8a', light: '#f0f0f0', dark: '#666' },
+    netherite:{ top: '#3a3030', side: '#2a2020', light: '#4a4040', dark: '#1a1010' },
+    redstone: { top: '#c41e1e', side: '#7a1010', light: '#ff5050', dark: '#4a0808' },
+    emerald:  { top: '#17dd62', side: '#0a8a3a', light: '#3aff80', dark: '#055020' },
+    lapis:    { top: '#3a6ad0', side: '#1e4ab0', light: '#6090ff', dark: '#0e2a70' },
+    tnt:      { top: '#c41e1e', side: '#c41e1e', light: '#e83a3a', dark: '#7a1010' },
+    enderpearl:{top: '#1a3a3a', side: '#0a1a1a', light: '#2a5a5a', dark: '#000' },
+    chest:    { top: '#a06a30', side: '#7a4a20', light: '#c08850', dark: '#4a2a10' },
+    void:     { top: '#1a1a1a', side: '#0a0a0a', light: '#2a2a2a', dark: '#000' },
+    grass_path:{top:'#a08868', side: '#79553a', light: '#c0a888', dark: '#5e3f29' },
+  };
+  const b = blocks[kind] || blocks.stone;
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" style={{ imageRendering: 'pixelated', shapeRendering: 'crispEdges', display: 'block' }}>
+      <rect x="0" y="0" width="16" height="4" fill={b.top} />
+      <rect x="0" y="4" width="16" height="12" fill={b.side} />
+      <rect x="0" y="4" width="1" height="12" fill={b.light} />
+      <rect x="0" y="4" width="16" height="1" fill={b.light} />
+      <rect x="15" y="4" width="1" height="12" fill={b.dark} />
+      <rect x="0" y="15" width="16" height="1" fill={b.dark} />
+      {kind === 'grass' && (<>
+        <rect x="2" y="1" width="1" height="1" fill={b.light} />
+        <rect x="7" y="2" width="1" height="1" fill={b.dark} />
+        <rect x="12" y="1" width="1" height="1" fill={b.light} />
+      </>)}
+      {kind === 'diamond' && (<>
+        <rect x="3" y="7" width="2" height="2" fill="#fff" />
+        <rect x="11" y="11" width="2" height="2" fill="#fff" />
+      </>)}
+      {kind === 'gold' && (<>
+        <rect x="3" y="7" width="1" height="1" fill="#fff8a0" />
+        <rect x="11" y="10" width="1" height="1" fill="#fff8a0" />
+      </>)}
+      {kind === 'tnt' && (<>
+        <rect x="0" y="3" width="16" height="1.5" fill="#fff" />
+        <rect x="0" y="13" width="16" height="1.5" fill="#fff" />
+        <text x="8" y="11" fontSize="5" fill="#fff" textAnchor="middle" fontFamily="monospace" fontWeight="bold">TNT</text>
+      </>)}
+      {kind === 'redstone' && (<>
+        <rect x="3" y="7" width="1" height="1" fill="#ff8080" />
+        <rect x="11" y="10" width="1" height="1" fill="#ff8080" />
+      </>)}
+      {(kind === 'stone' || kind === 'cobble' || kind === 'iron') && (<>
+        <rect x="3" y="8" width="1" height="1" fill={b.dark} />
+        <rect x="9" y="6" width="1" height="1" fill={b.light} />
+        <rect x="12" y="11" width="1" height="1" fill={b.dark} />
+      </>)}
+      {kind === 'dirt' && (<>
+        <rect x="3" y="7" width="2" height="2" fill={b.light} />
+        <rect x="9" y="9" width="2" height="2" fill={b.dark} />
+        <rect x="6" y="12" width="2" height="1" fill={b.light} />
+      </>)}
+    </svg>
+  );
+}
+
+// ─────────── CHARACTER (pixel-art Steve / Alex / Creeper) ───────────
+function Character({ kind = 'steve', size = 64 }) {
+  // Full-body 8x16 pixel character
+  const chars = {
+    steve: {
+      hair: '#3a2410', face: '#b08868', eye: '#3050d0', mouth: '#5a3a20',
+      shirt: '#0098db', shirtD: '#006da0', arm: '#b08868',
+      pants: '#3a3aa0', shoe: '#1a1a4a',
+    },
+    alex: {
+      hair: '#cc8050', face: '#f9c69b', eye: '#509050', mouth: '#aa5050',
+      shirt: '#3aa055', shirtD: '#207035', arm: '#f9c69b',
+      pants: '#7a4a30', shoe: '#3a2010',
+    },
+    creeper: {
+      hair: '#5fa83b', face: '#5fa83b', eye: '#000', mouth: '#000',
+      shirt: '#5fa83b', shirtD: '#3b6a23', arm: '#5fa83b',
+      pants: '#5fa83b', shoe: '#3b6a23',
+    },
+    enderman: {
+      hair: '#000', face: '#0a0a0a', eye: '#c84cff', mouth: '#0a0a0a',
+      shirt: '#000', shirtD: '#0a0a0a', arm: '#000',
+      pants: '#000', shoe: '#000',
+    },
+  };
+  const c = chars[kind] || chars.steve;
+  return (
+    <svg width={size} height={size * 2} viewBox="0 0 8 16" style={{ imageRendering: 'pixelated', shapeRendering: 'crispEdges', display: 'block' }}>
+      {/* Head */}
+      <rect x="2" y="0" width="4" height="4" fill={c.face} />
+      <rect x="2" y="0" width="4" height="1" fill={c.hair} />
+      {kind !== 'creeper' && kind !== 'enderman' && <>
+        <rect x="2" y="1" width="1" height="1" fill={c.hair} />
+        <rect x="5" y="1" width="1" height="1" fill={c.hair} />
+      </>}
+      {/* Eyes */}
+      {kind === 'creeper' ? (<>
+        <rect x="2" y="1" width="1" height="1" fill={c.eye} />
+        <rect x="5" y="1" width="1" height="1" fill={c.eye} />
+        <rect x="3" y="2" width="2" height="2" fill={c.eye} />
+        <rect x="2" y="2" width="1" height="1" fill={c.eye} />
+        <rect x="5" y="2" width="1" height="1" fill={c.eye} />
+      </>) : (<>
+        <rect x="3" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill={c.eye} />
+        <rect x="3" y="2" width="0.5" height="1" fill={c.eye} />
+        {kind !== 'enderman' && <rect x="3" y="3" width="2" height="0.5" fill={c.mouth} />}
+        {kind === 'enderman' && <>
+          <rect x="3" y="2" width="1" height="1" fill={c.eye} />
+          <rect x="4" y="2" width="1" height="1" fill={c.eye} />
+        </>}
+      </>)}
+      {/* Body */}
+      <rect x="2" y="4" width="4" height="6" fill={c.shirt} />
+      <rect x="2" y="9" width="4" height="1" fill={c.shirtD} />
+      {/* Arms */}
+      <rect x="1" y="4" width="1" height="6" fill={c.arm} />
+      <rect x="6" y="4" width="1" height="6" fill={c.arm} />
+      <rect x="1" y="4" width="1" height="3" fill={c.shirt} />
+      <rect x="6" y="4" width="1" height="3" fill={c.shirt} />
+      {/* Legs */}
+      <rect x="2" y="10" width="2" height="5" fill={c.pants} />
+      <rect x="4" y="10" width="2" height="5" fill={c.pants} />
+      {/* Shoes */}
+      <rect x="2" y="14" width="2" height="1" fill={c.shoe} />
+      <rect x="4" y="14" width="2" height="1" fill={c.shoe} />
+      {/* Shadow */}
+      <ellipse cx="4" cy="15.5" rx="2.5" ry="0.4" fill="rgba(0,0,0,0.5)" />
+    </svg>
+  );
+}
+
+// ─────────── PLAYER HEAD (avatar) ───────────
+function Head({ kind = 'steve', size = 28 }) {
+  const skins = {
+    steve:    { face: '#b08868', hair: '#3a2410', eye: '#3050d0', mouth: '#5a3a20' },
+    alex:     { face: '#f9c69b', hair: '#cc8050', eye: '#509050', mouth: '#aa5050' },
+    enderman: { face: '#0a0a0a', hair: '#000',    eye: '#c84cff', mouth: '#000' },
+    redstone: { face: '#b08868', hair: '#c41e1e', eye: '#000',    mouth: '#5a3a20' },
+    panda:    { face: '#f0f0f0', hair: '#1a1a1a', eye: '#1a1a1a', mouth: '#1a1a1a' },
+    piglin:   { face: '#f0a89a', hair: '#a06040', eye: '#000',    mouth: '#7a3a30' },
+    creeper:  { face: '#5fa83b', hair: '#3b6a23', eye: '#1a1a1a', mouth: '#1a1a1a' },
+    witch:    { face: '#506060', hair: '#1a1a1a', eye: '#a020a0', mouth: '#3a2030' },
+    iron:     { face: '#d8d8d8', hair: '#88c0a0', eye: '#88c0a0', mouth: '#888' },
+  };
+  const s = skins[kind] || skins.steve;
+  return (
+    <svg width={size} height={size} viewBox="0 0 8 8" style={{ imageRendering: 'pixelated', shapeRendering: 'crispEdges', display: 'block', borderRadius: 4 }}>
+      <rect x="0" y="0" width="8" height="8" fill={s.face} />
+      <rect x="0" y="0" width="8" height="2" fill={s.hair} />
+      <rect x="0" y="2" width="1" height="1" fill={s.hair} />
+      <rect x="7" y="2" width="1" height="1" fill={s.hair} />
+      <rect x="2" y="3" width="1" height="1" fill="#fff" />
+      <rect x="5" y="3" width="1" height="1" fill="#fff" />
+      <rect x="2" y="4" width="1" height="1" fill={s.eye} />
+      <rect x="5" y="4" width="1" height="1" fill={s.eye} />
+      <rect x="3" y="6" width="2" height="1" fill={s.mouth} />
+    </svg>
+  );
+}
+
 function Icon({ name, size = 18, color = 'currentColor', strokeWidth = 1.6 }) {
   const props = {
     width: size, height: size, viewBox: '0 0 24 24',
@@ -29,7 +194,13 @@ function Icon({ name, size = 18, color = 'currentColor', strokeWidth = 1.6 }) {
     'x':       <><path d="M18 6 6 18"/><path d="m6 6 12 12"/></>,
     'arrow-l': <><path d="m15 18-6-6 6-6"/></>,
     'arrow-r': <><path d="m9 6 6 6-6 6"/></>,
+    'arrow-left': <><path d="m15 18-6-6 6-6"/></>,
     'chevron-d':<><path d="m6 9 6 6 6-6"/></>,
+    'chevron-right': <><path d="m9 6 6 6-6 6"/></>,
+    'chevron-left': <><path d="m15 18-6-6 6-6"/></>,
+    'grid': <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
+    'puzzle': <><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5l6.74-6.76z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></>,
+    'sliders': <><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></>,
     'cpu':     <><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3"/><path d="M15 1v3"/><path d="M9 20v3"/><path d="M15 20v3"/><path d="M20 9h3"/><path d="M20 14h3"/><path d="M1 9h3"/><path d="M1 14h3"/></>,
     'memory':  <><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10v4"/><path d="M11 10v4"/><path d="M15 10v4"/></>,
     'gauge':   <><path d="M12 14a2 2 0 1 0 2-2"/><path d="M13.4 10.6 19 5"/><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></>,
@@ -54,23 +225,8 @@ function Icon({ name, size = 18, color = 'currentColor', strokeWidth = 1.6 }) {
 }
 
 // ─── 3D Minecraft cube logo ───────────────────────────────────────────────────
-function CubeLogo({ size = 28, color }) {
-  const c = color || 'var(--accent)';
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: 'block' }}>
-      <defs>
-        <linearGradient id="cubeT" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor={c} stopOpacity="1"/>
-          <stop offset="1" stopColor={c} stopOpacity="0.7"/>
-        </linearGradient>
-      </defs>
-      <path d="M16 3 L28 9 L16 15 L4 9 Z" fill="url(#cubeT)"/>
-      <path d="M28 9 L28 22 L16 28 L16 15 Z" fill={c} fillOpacity="0.55"/>
-      <path d="M4 9 L4 22 L16 28 L16 15 Z" fill={c} fillOpacity="0.35"/>
-      <path d="M16 3 L28 9 L28 22 L16 28 L4 22 L4 9 Z" fill="none" stroke={c} strokeWidth="0.8" strokeOpacity="0.4" strokeLinejoin="round"/>
-      <path d="M16 15 L16 28 M16 15 L4 9 M16 15 L28 9" stroke={c} strokeWidth="0.5" strokeOpacity="0.4"/>
-    </svg>
-  );
+function CubeLogo({ size = 28 }) {
+  return <Block kind="grass" size={size} />;
 }
 
 // ─── Pixel-art Minecraft Steve character ─────────────────────────────────────
@@ -241,7 +397,7 @@ function Sparkline({ data, color = 'var(--accent)', height = 50, max, min = 0, f
 // ─── Floating particles ─────────────────────────────────────────────────────
 function ParticleField({ animations, theme }) {
   if (!animations) return null;
-  const colors = { default: '#4ade80', nether: '#f87171', end: '#c084fc', aqua: '#22d3ee' };
+  const colors = { default: '#5fff67', nether: '#ff7a3a', end: '#c084fc', diamond: '#5cdbd5' };
   const c = colors[theme] || colors.default;
   const items = useMemo(() =>
     Array.from({ length: 16 }).map((_, i) => ({
@@ -332,8 +488,8 @@ function TweaksPanel({ open, onClose, t, setTweak }) {
 
       <TwkSect label="Akcent kolorystyczny"/>
       <TwkSeg label="Motyw" value={t.theme} options={[
-        { v: 'default', l: 'Green' }, { v: 'aqua', l: 'Aqua' },
-        { v: 'nether', l: 'Red' }, { v: 'end', l: 'Purple' },
+        { v: 'default', l: 'Grass' }, { v: 'diamond', l: 'Diamond' },
+        { v: 'nether', l: 'Nether' }, { v: 'end', l: 'End' },
       ]} onChange={v => setTweak('theme', v)}/>
 
       <TwkSect label="Typografia"/>
@@ -397,4 +553,5 @@ window.CraftUI = {
   Icon, CubeLogo, SteveCharacter, Avatar, ServerBadge,
   Sparkline, ParticleField, Tabs, MCHearts, MCProgressBar,
   useTweaks, TweaksPanel,
+  Block, Character, Head,
 };
