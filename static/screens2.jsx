@@ -19,12 +19,16 @@ function HealthBar({ value, max }) {
 function PlayersTab({ serverId }) {
   const [players, setPlayers] = useState([]);
   const [filter, setFilter] = useState('all');
-  const hasHealth = players.some(p => p.health > 0);
+  const [packConnected, setPackConnected] = useState(false);
 
   const load = () => {
     fetch(`${API}/api/servers/${serverId}/players`)
       .then(r => r.ok ? r.json() : null)
-      .then(d => d && setPlayers(d))
+      .then(d => {
+        if (!d) return;
+        setPlayers(d);
+        setPackConnected(d.some(p => p.online && p.max_health > 0));
+      })
       .catch(() => {});
   };
 
@@ -41,22 +45,30 @@ function PlayersTab({ serverId }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)', padding: 'var(--pad)' }}>
 
-      {/* Health pack banner — shown when health data not yet received */}
-      {!hasHealth && (
-        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.2)' }}>
+      {/* Health pack status banner */}
+      <div className="card" style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+        background: packConnected ? 'rgba(74,222,128,0.07)' : 'rgba(96,165,250,0.07)',
+        border: `1px solid ${packConnected ? 'rgba(74,222,128,0.2)' : 'rgba(96,165,250,0.2)'}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 16 }}>{packConnected ? '🟢' : '⚪'}</span>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>Monitorowanie zdrowia gracza (Bedrock)</div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-              Pobierz i zainstaluj behavior pack, aby widzieć health, ping i świat w czasie rzeczywistym.
-              Wymagane: <code style={{ fontSize: 11 }}>allow-outbound-script-debug-access=true</code> w server.properties
+            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>
+              {packConnected ? 'Health Monitor połączony — dane live' : 'Health Monitor nie wykryty'}
             </div>
+            {!packConnected && (
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 1 }}>
+                Pobierz pack, zainstaluj w behavior_packs, dodaj <code style={{ fontSize: 11 }}>allow-outbound-script-debug-access=true</code> do server.properties i zrestartuj serwer
+              </div>
+            )}
           </div>
+        </div>
+        {!packConnected && (
           <a href={`${API}/api/servers/${serverId}/bedrock-healthpack`}
              className="btn btn-sm btn-primary" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }}>
             <I2 name="download" size={13}/> Pobierz pack
           </a>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -67,7 +79,7 @@ function PlayersTab({ serverId }) {
             </h3>
             <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
               {online.filter(p => p.op).length > 0 && `${online.filter(p => p.op).length} OPs · `}
-              Odświeżanie co 3s {hasHealth && '· ❤ Live health'}
+              Odświeżanie co 3s
             </div>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
@@ -85,11 +97,7 @@ function PlayersTab({ serverId }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--bg-1)' }}>
-                <Th>Gracz</Th><Th>Status</Th>
-                {hasHealth && <Th>Świat</Th>}
-                {hasHealth && <Th>Ping</Th>}
-                {hasHealth && <Th>Health</Th>}
-                <Th>Czas sesji</Th><Th align="right">Akcje</Th>
+                <Th>Gracz</Th><Th>Status</Th><Th>Świat</Th><Th>Ping</Th><Th>Health</Th><Th>Czas sesji</Th><Th align="right">Akcje</Th>
               </tr>
             </thead>
             <tbody>
@@ -112,9 +120,9 @@ function PlayersTab({ serverId }) {
                       {p.op && <span style={{ fontSize: 10, background: 'rgba(248,113,113,0.15)', color: '#fca5a5', padding: '1px 5px', borderRadius: 4, display:'inline-block' }}>OP</span>}
                     </div>
                   </Td>
-                  {hasHealth && <Td><span className="mono" style={{ fontSize: 12 }}>{p.world || '—'}</span></Td>}
-                  {hasHealth && <Td><span className="mono" style={{ color: p.ping > 100 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping ? `${p.ping}ms` : '—'}</span></Td>}
-                  {hasHealth && <Td><HealthBar value={p.health} max={p.max_health}/></Td>}
+                  <Td><span className="mono" style={{ fontSize: 12 }}>{p.world || '—'}</span></Td>
+                  <Td><span className="mono" style={{ color: p.ping > 100 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping ? `${p.ping}ms` : '—'}</span></Td>
+                  <Td><HealthBar value={p.health} max={p.max_health}/></Td>
                   <Td><span className="mono" style={{ color: p.online ? 'var(--online)' : 'var(--text-4)' }}>{p.playtime || '—'}</span></Td>
                   <Td align="right">
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
