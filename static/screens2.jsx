@@ -20,6 +20,7 @@ function PlayersTab({ serverId }) {
   const [players, setPlayers] = useState([]);
   const [filter, setFilter] = useState('all');
   const [packConnected, setPackConnected] = useState(false);
+  const [testResult, setTestResult] = useState('');
 
   const load = () => {
     fetch(`${API}/api/servers/${serverId}/players`)
@@ -38,6 +39,26 @@ function PlayersTab({ serverId }) {
     return () => clearInterval(t);
   }, [serverId]);
 
+  const testEndpoint = async () => {
+    setTestResult('Testowanie...');
+    try {
+      const r = await fetch(`${API}/api/servers/${serverId}/health`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ name: 'TestPlayer', health: 20, max_health: 20, ping: 0, world: 'overworld' }]),
+      });
+      if (r.status === 204) {
+        setTestResult('✓ Endpoint działa! Jeśli pack jest zainstalowany i serwer uruchomiony — poczekaj 5s i odśwież');
+        load();
+      } else {
+        setTestResult(`✗ Endpoint zwrócił HTTP ${r.status} — przebuduj binary: git pull && go build -o craftpanel .`);
+      }
+    } catch (e) {
+      setTestResult(`✗ Błąd połączenia: ${e.message}`);
+    }
+  };
+
+  const healthUrl = `${location.protocol}//${location.host}/api/servers/${serverId}/health`;
   const online  = players.filter(p => p.online);
   const offline = players.filter(p => !p.online);
   const shown   = filter === 'online' ? online : filter === 'offline' ? offline : players;
@@ -46,27 +67,38 @@ function PlayersTab({ serverId }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)', padding: 'var(--pad)' }}>
 
       {/* Health pack status banner */}
-      <div className="card" style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+      <div className="card" style={{ padding: '12px 18px',
         background: packConnected ? 'rgba(74,222,128,0.07)' : 'rgba(96,165,250,0.07)',
         border: `1px solid ${packConnected ? 'rgba(74,222,128,0.2)' : 'rgba(96,165,250,0.2)'}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 16 }}>{packConnected ? '🟢' : '⚪'}</span>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>
-              {packConnected ? 'Health Monitor połączony — dane live' : 'Health Monitor nie wykryty'}
-            </div>
-            {!packConnected && (
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 1 }}>
-                Pobierz pack, zainstaluj w behavior_packs, dodaj <code style={{ fontSize: 11 }}>allow-outbound-script-debug-access=true</code> do server.properties i zrestartuj serwer
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 16 }}>{packConnected ? '🟢' : '⚪'}</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>
+                {packConnected ? 'Health Monitor połączony — dane live' : 'Health Monitor nie wykryty'}
               </div>
+              {!packConnected && (
+                <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, fontFamily: 'monospace' }}>
+                  URL w scripcie: <span style={{ color: 'var(--accent)' }}>{healthUrl}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <button className="btn btn-sm btn-ghost" onClick={testEndpoint}>Testuj endpoint</button>
+            {!packConnected && (
+              <a href={`${API}/api/servers/${serverId}/bedrock-healthpack`}
+                 className="btn btn-sm btn-primary" style={{ textDecoration: 'none' }}>
+                <I2 name="download" size={13}/> Pobierz pack
+              </a>
             )}
           </div>
         </div>
-        {!packConnected && (
-          <a href={`${API}/api/servers/${serverId}/bedrock-healthpack`}
-             className="btn btn-sm btn-primary" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }}>
-            <I2 name="download" size={13}/> Pobierz pack
-          </a>
+        {testResult && (
+          <div style={{ marginTop: 8, fontSize: 12, padding: '6px 10px', borderRadius: 6, background: 'var(--bg-2)',
+            color: testResult.startsWith('✓') ? '#4ade80' : testResult.startsWith('✗') ? 'var(--danger)' : 'var(--text-2)' }}>
+            {testResult}
+          </div>
         )}
       </div>
 
