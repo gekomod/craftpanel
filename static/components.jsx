@@ -25,6 +25,7 @@ function Icon({ name, size = 18, color = 'currentColor', strokeWidth = 1.6 }) {
     'plus':    <><path d="M12 5v14"/><path d="M5 12h14"/></>,
     'search':  <><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></>,
     'check':   <><path d="m5 12 5 5 9-11"/></>,
+    'save':    <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,
     'x':       <><path d="M18 6 6 18"/><path d="m6 6 12 12"/></>,
     'arrow-l': <><path d="m15 18-6-6 6-6"/></>,
     'arrow-r': <><path d="m9 6 6 6-6 6"/></>,

@@ -1,7 +1,7 @@
 const { useState, useEffect, useRef, useCallback } = React;
 const TWEAK_DEFAULTS = { theme: 'default', font: 'modern', density: 'regular', animations: true };
 const { LoginScreen, DashboardScreen, ServerDetailScreen } = window.CraftScreens;
-const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab } = window.CraftTabs;
+const { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab, PanelSettingsScreen } = window.CraftTabs;
 const { Icon, CubeLogo, SteveCharacter, TweaksPanel, useTweaks } = window.CraftUI;
 const { InstallerModal } = window.CraftInstaller;
 const { UsersScreen, ChangePasswordModal } = window.CraftUsers;
@@ -104,6 +104,14 @@ function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServe
             onClick={() => navigate({ screen: 'users' })}>
             <Icon name="users" size={16}/>
             <span style={{ fontSize: 13 }}>Użytkownicy</span>
+          </button>
+        )}
+        {!collapsed && currentUser?.role === 'admin' && (
+          <button className={`sidebar-item ${route.screen === 'panel-settings' ? 'sidebar-item--active' : ''}`}
+            style={{ marginTop: 2, color: route.screen === 'panel-settings' ? 'var(--accent)' : 'var(--text-3)' }}
+            onClick={() => navigate({ screen: 'panel-settings' })}>
+            <Icon name="settings" size={16}/>
+            <span style={{ fontSize: 13 }}>Ustawienia panelu</span>
           </button>
         )}
       </div>
@@ -297,7 +305,7 @@ function App() {
     return <LoginScreen onLogin={handleLogin} />;
   }
 
-  const showSidebar = route.screen === 'dashboard' || route.screen === 'detail' || route.screen === 'users';
+  const showSidebar = route.screen === 'dashboard' || route.screen === 'detail' || route.screen === 'users' || route.screen === 'panel-settings';
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'app-shell--collapsed' : ''}`}>
@@ -334,6 +342,9 @@ function App() {
             <UsersScreen currentUser={currentUser} onProfileUpdate={() => {
               fetch('/api/auth/me').then(r => r.json()).then(setCurrentUser).catch(() => {});
             }}/>
+          )}
+          {route.screen === 'panel-settings' && (
+            <PanelSettingsScreen currentUser={currentUser}/>
           )}
         </main>
       </div>

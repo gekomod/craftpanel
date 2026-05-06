@@ -675,4 +675,100 @@ function SecurityTab({ serverId }) {
   );
 }
 
-window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab };
+function PanelSettingsScreen({ currentUser }) {
+  const [cfKey, setCfKey]     = useState('');
+  const [cfSet, setCfSet]     = useState(false);
+  const [cfPreview, setCfPreview] = useState('');
+  const [saving, setSaving]   = useState(false);
+  const [saved, setSaved]     = useState(false);
+  const [error, setError]     = useState('');
+
+  useEffect(() => {
+    fetch('/api/settings').then(r => r.json()).then(d => {
+      setCfSet(!!d.curseforge_api_key);
+      setCfPreview(d.curseforge_api_key_preview || '');
+    }).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true); setError(''); setSaved(false);
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ curseforge_api_key: cfKey }),
+      });
+      if (!r.ok) { const d = await r.json(); setError(d.error || 'Błąd'); }
+      else {
+        setSaved(true);
+        setCfSet(!!cfKey);
+        setCfPreview(cfKey.length > 8 ? cfKey.slice(0,4) + '•'.repeat(cfKey.length-8) + cfKey.slice(-4) : '•'.repeat(cfKey.length));
+        setCfKey('');
+        setTimeout(() => setSaved(false), 2500);
+      }
+    } catch(e) { setError(String(e)); }
+    setSaving(false);
+  };
+
+  const isAdmin = currentUser?.role === 'admin';
+
+  return (
+    <div style={{ padding: 'var(--pad)', maxWidth: 640 }}>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Ustawienia panelu</h2>
+        <p style={{ color: 'var(--text-3)', fontSize: 13, margin: '4px 0 0' }}>Konfiguracja globalna CraftPanel</p>
+      </div>
+
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: 'rgba(241,100,54,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f16436' }}>
+            <I2 name="lock" size={15}/>
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>CurseForge API Key</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Wymagany do wyszukiwania dodatków Bedrock z CurseForge</div>
+          </div>
+          {cfSet && <span className="chip chip-online" style={{ marginLeft: 'auto' }}>Aktywny</span>}
+        </div>
+
+        <p style={{ fontSize: 12, color: 'var(--text-3)', margin: '0 0 14px', lineHeight: 1.6 }}>
+          Bez klucza używany jest publiczny endpoint z ograniczeniami. Klucz pobierzesz bezpłatnie na{' '}
+          <a href="https://console.curseforge.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>console.curseforge.com</a>.
+        </p>
+
+        {cfSet && cfPreview && !cfKey && (
+          <div style={{ padding: '8px 12px', background: 'var(--bg-1)', borderRadius: 8, fontSize: 12, marginBottom: 12, color: 'var(--text-2)', fontFamily: 'monospace' }}>
+            Aktualny klucz: {cfPreview}
+          </div>
+        )}
+
+        {isAdmin ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="input mono"
+              type="password"
+              placeholder={cfSet ? 'Wpisz nowy klucz aby zastąpić…' : '$2a$10$…'}
+              value={cfKey}
+              onChange={e => { setCfKey(e.target.value); setError(''); }}
+              style={{ flex: 1, fontSize: 12 }}
+            />
+            <button className="btn btn-primary" onClick={save} disabled={saving || !cfKey.trim()}>
+              <I2 name={saved ? 'check' : 'save'} size={14}/> {saved ? 'Zapisano!' : saving ? '…' : 'Zapisz'}
+            </button>
+            {cfSet && (
+              <button className="btn btn-danger" onClick={() => { setCfKey(''); fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({curseforge_api_key:''}) }).then(() => { setCfSet(false); setCfPreview(''); }); }} title="Usuń klucz">
+                <I2 name="trash" size={14}/>
+              </button>
+            )}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--text-3)' }}>Tylko administrator może zmieniać ustawienia panelu.</div>
+        )}
+
+        {error && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+      </div>
+    </div>
+  );
+}
+
+window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab, PanelSettingsScreen };

@@ -36,8 +36,9 @@ import (
 // ── Config ────────────────────────────────────────────────────────────────────
 
 type Config struct {
-	Listen  string         `json:"listen"`
-	Servers []ServerConfig `json:"servers"`
+	Listen           string         `json:"listen"`
+	Servers          []ServerConfig `json:"servers"`
+	CurseForgeAPIKey string         `json:"curseforge_api_key,omitempty"`
 }
 
 // Type is "java" or "bedrock"
@@ -1602,11 +1603,23 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			respMR.Body.Close()
 		}
 
-		// Bedrock: 3) CurseForge (minecraft-bedrock, class=addons, gameId=432, classId=4484)
-		cfURL := fmt.Sprintf("https://www.curseforge.com/api/v1/mods/search?gameId=432&classId=4484&searchFilter=%s&pageSize=10&sortField=2&sortOrder=desc", url.QueryEscape(q))
+		// Bedrock: 3) CurseForge
+		a.mu.RLock()
+		cfKey := a.config.CurseForgeAPIKey
+		a.mu.RUnlock()
+		var cfBase string
+		if cfKey != "" {
+			cfBase = "https://api.curseforge.com/v1"
+		} else {
+			cfBase = "https://www.curseforge.com/api/v1"
+		}
+		cfURL := fmt.Sprintf("%s/mods/search?gameId=432&classId=4484&searchFilter=%s&pageSize=10&sortField=2&sortOrder=desc", cfBase, url.QueryEscape(q))
 		reqCF, _ := http.NewRequestWithContext(ctx, "GET", cfURL, nil)
 		reqCF.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
 		reqCF.Header.Set("Accept", "application/json")
+		if cfKey != "" {
+			reqCF.Header.Set("x-api-key", cfKey)
+		}
 		if respCF, err := client2.Do(reqCF); err == nil && respCF.StatusCode == 200 {
 			var cfData struct {
 				Data []struct {
@@ -2673,6 +2686,38 @@ func (a *App) handleDeleteServer(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]string{"status": "ok"})
 }
 
+func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	key := a.config.CurseForgeAPIKey
+	a.mu.RUnlock()
+	// Mask the key — only return whether it's set and a preview
+	preview := ""
+	if len(key) > 8 {
+		preview = key[:4] + strings.Repeat("•", len(key)-8) + key[len(key)-4:]
+	} else if key != "" {
+		preview = strings.Repeat("•", len(key))
+	}
+	jsonResp(w, map[string]any{
+		"curseforge_api_key":         key != "",
+		"curseforge_api_key_preview": preview,
+	})
+}
+
+func (a *App) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
+	var s struct {
+		CurseForgeAPIKey string `json:"curseforge_api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		jsonErr(w, err.Error(), 400)
+		return
+	}
+	a.mu.Lock()
+	a.config.CurseForgeAPIKey = s.CurseForgeAPIKey
+	a.mu.Unlock()
+	a.saveConfig()
+	jsonResp(w, map[string]string{"status": "ok"})
+}
+
 func (a *App) saveConfig() {
 	a.mu.RLock()
 	var cfgServers []ServerConfig
@@ -2681,7 +2726,7 @@ func (a *App) saveConfig() {
 	}
 	a.mu.RUnlock()
 
-	cfg := Config{Listen: a.config.Listen, Servers: cfgServers}
+	cfg := Config{Listen: a.config.Listen, Servers: cfgServers, CurseForgeAPIKey: a.config.CurseForgeAPIKey}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		log.Printf("saveConfig marshal: %v", err)
@@ -2758,6 +2803,8 @@ func main() {
 	mux.HandleFunc("POST /api/servers/{id}/backups", app.authMW(app.handleCreateBackup))
 	mux.HandleFunc("GET /api/servers/{id}/stats", app.authMW(app.handleStats))
 	mux.HandleFunc("GET /api/servers/{id}/stats/history", app.authMW(app.handleStatsHistory))
+	mux.HandleFunc("GET /api/settings", app.adminMW(app.handleGetSettings))
+	mux.HandleFunc("POST /api/settings", app.adminMW(app.handleSaveSettings))
 	mux.HandleFunc("GET /api/install/java/versions", app.authMW(handleJavaVersions))
 	mux.HandleFunc("GET /api/install/bedrock", app.authMW(handleBedrockInfo))
 	mux.HandleFunc("POST /api/install/start", app.authMW(app.handleInstallStart))
