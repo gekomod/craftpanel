@@ -649,7 +649,7 @@ function ConsoleTab({ serverId }) {
     if (!input.trim()) return;
     const t = new Date();
     const ts = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}`;
-    setLines(prev => [...prev, { t: ts, lvl: 'CMD', txt: `> ${input}`, col: '#fbbf24' }]);
+    setLines(prev => [...prev, { time: ts, level: 'CMD', message: `> ${input}`, col: '#fbbf24' }]);
     fetch(`${API}/api/servers/${serverId}/command`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: input }),
@@ -675,13 +675,19 @@ function ConsoleTab({ serverId }) {
       </div>
 
       <div ref={ref} style={{ height: 'calc(100vh - 420px)', minHeight: 380, background: 'var(--bg-0)', overflowY: 'auto', padding: '12px 0' }}>
-        {lines.map((l, i) => (
-          <div key={i} className="console-line">
-            <span style={{ color: 'var(--text-4)' }}>{l.t}</span>
-            <span style={{ color: l.lvl === 'ERROR' ? 'var(--danger)' : l.lvl === 'WARN' ? 'var(--warn)' : l.lvl === 'CMD' ? 'var(--warn)' : 'var(--text-3)', fontWeight: 500 }}>{l.lvl}</span>
-            <span style={{ color: l.col, wordBreak: 'break-word' }}>{l.txt}</span>
-          </div>
-        ))}
+        {lines.map((l, i) => {
+          const ts  = l.time  || l.t   || '';
+          const lvl = l.level || l.lvl || '';
+          const txt = l.message || l.txt || '';
+          const col = l.col || (lvl === 'ERROR' ? 'var(--danger)' : lvl === 'WARN' ? '#f59e0b' : 'var(--text-1)');
+          return (
+            <div key={i} className="console-line">
+              <span style={{ color: 'var(--text-4)' }}>{ts}</span>
+              <span style={{ color: lvl === 'ERROR' ? 'var(--danger)' : lvl === 'WARN' ? '#f59e0b' : lvl === 'CMD' ? '#fbbf24' : 'var(--text-3)', fontWeight: 500 }}>{lvl}</span>
+              <span style={{ color: col, wordBreak: 'break-word' }}>{txt}</span>
+            </div>
+          );
+        })}
       </div>
 
       <div style={{ padding: 12, borderTop: '1px solid var(--line-1)', background: 'var(--bg-1)' }}>
