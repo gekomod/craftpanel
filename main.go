@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"crypto/tls"
 	"net/http"
 	"net/url"
 	"os"
@@ -2247,7 +2248,19 @@ func installBedrock(job *installJob, downloadURL, dir string) error {
 }
 
 func downloadFile(job *installJob, url, dest string) error {
-	resp, err := http.Get(url)
+	// Force HTTP/1.1 — some CDNs (e.g. minecraft.net) drop HTTP/2 with INTERNAL_ERROR
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+	}
+	client := &http.Client{Transport: transport}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+	req.Header.Set("Accept", "*/*")
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
