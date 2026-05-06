@@ -1319,6 +1319,26 @@ func (a *App) handleCommand(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]string{"status": "ok"})
 }
 
+func (a *App) handleConsoleLines(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "not found", 404)
+		return
+	}
+	// ?offset=N — return lines from index N onward (client tracks position)
+	offsetStr := r.URL.Query().Get("offset")
+	offset := 0
+	if n, err := strconv.Atoi(offsetStr); err == nil && n > 0 {
+		offset = n
+	}
+	all := ms.RecentLines()
+	if offset >= len(all) {
+		jsonResp(w, map[string]any{"lines": []ConsoleLine{}, "total": len(all)})
+		return
+	}
+	jsonResp(w, map[string]any{"lines": all[offset:], "total": len(all)})
+}
+
 func (a *App) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	ms, ok := a.get(r.PathValue("id"))
 	if !ok {
@@ -1334,6 +1354,10 @@ func (a *App) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", 500)
 		return
 	}
+	// Immediate ping so browser/proxy knows stream is live
+	fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
 	for _, line := range ms.RecentLines() {
 		data, _ := json.Marshal(line)
 		fmt.Fprintf(w, "data: %s\n\n", data)
@@ -2794,6 +2818,7 @@ func main() {
 	mux.HandleFunc("POST /api/servers/{id}/action", app.authMW(app.handleAction))
 	mux.HandleFunc("POST /api/servers/{id}/command", app.authMW(app.handleCommand))
 	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.authMW(app.handleConsoleStream))
+	mux.HandleFunc("GET /api/servers/{id}/console/lines", app.authMW(app.handleConsoleLines))
 	mux.HandleFunc("GET /api/servers/{id}/players", app.authMW(app.handlePlayers))
 	mux.HandleFunc("GET /api/servers/{id}/plugins", app.authMW(app.handlePlugins))
 	mux.HandleFunc("GET /api/servers/{id}/plugins/search", app.authMW(app.handlePluginSearch))

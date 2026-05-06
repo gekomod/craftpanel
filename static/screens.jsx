@@ -590,43 +590,59 @@ function WorldHeatmap() {
   );
 }
 
-// ─── CONSOLE — Server-Sent Events live stream ──────────────────────────────
+// ─── CONSOLE ──────────────────────────────────────────────────────────────────
 function ConsoleTab({ serverId }) {
   const [lines, setLines] = useState([]);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
   const ref = useRef(null);
+  const offsetRef = useRef(0);
   const srcRef = useRef(null);
-  const retryRef = useRef(null);
 
+  // Polling fallback — always runs, fetches new lines every 1.5s
   useEffect(() => {
     let active = true;
+    offsetRef.current = 0;
 
-    const connect = () => {
+    const poll = () => {
       if (!active) return;
-      const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`, { withCredentials: true });
-      srcRef.current = src;
-      src.onopen = () => { if (active) setConnected(true); };
-      src.onmessage = (e) => {
-        if (!active) return;
-        try {
-          const line = JSON.parse(e.data);
-          setLines(prev => [...prev.slice(-300), line]);
-        } catch {}
-      };
-      src.onerror = () => {
-        src.close();
-        if (!active) return;
-        setConnected(false);
-        retryRef.current = setTimeout(connect, 3000);
-      };
+      fetch(`${API}/api/servers/${serverId}/console/lines?offset=${offsetRef.current}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (!active || !d) return;
+          if (d.lines && d.lines.length > 0) {
+            setLines(prev => [...prev.slice(-500), ...d.lines]);
+            offsetRef.current = d.total;
+          }
+          setConnected(true);
+        })
+        .catch(() => setConnected(false));
     };
 
-    connect();
+    poll();
+    const t = setInterval(poll, 1500);
+
+    // Also try SSE for lower latency
+    const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`, { withCredentials: true });
+    srcRef.current = src;
+    src.onmessage = (e) => {
+      if (!active) return;
+      try {
+        const line = JSON.parse(e.data);
+        // SSE delivers lines — keep offset in sync so polling doesn't duplicate
+        setLines(prev => {
+          const next = [...prev.slice(-500), line];
+          return next;
+        });
+        offsetRef.current += 1;
+      } catch {}
+    };
+    src.onerror = () => src.close();
+
     return () => {
       active = false;
-      clearTimeout(retryRef.current);
-      srcRef.current?.close();
+      clearInterval(t);
+      src.close();
     };
   }, [serverId]);
 
