@@ -700,6 +700,19 @@ func (s *ManagedServer) Start() error {
 		return fmt.Errorf("server already running")
 	}
 
+	if s.Config.IsBedrock() {
+		// Patch level.dat to enable Script API (gametest experiment) if not already done.
+		// level.dat may not exist on very first start — error is silently ignored.
+		worldsDir := filepath.Join(s.Config.Directory, "worlds")
+		if entries, err := os.ReadDir(worldsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					_ = enableBedrockExperiments(filepath.Join(worldsDir, e.Name(), "level.dat"))
+				}
+			}
+		}
+	}
+
 	var cmd *exec.Cmd
 	if s.Config.IsBedrock() {
 		exe := s.Config.Executable
@@ -1158,6 +1171,74 @@ func readProcRAM(pid int) int64 {
 }
 
 var reHTML = regexp.MustCompile(`<[^>]+>`)
+
+// enableBedrockExperiments patches level.dat (little-endian NBT) to enable
+// the "gametest" experiment required for Script API behavior packs.
+func enableBedrockExperiments(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) < 8 {
+		return nil
+	}
+	nbt := data[8:] // skip 4-byte version + 4-byte length header
+
+	// Helper: write a TAG_Byte entry (little-endian NBT)
+	byteTag := func(name string, val byte) []byte {
+		n := []byte(name)
+		b := []byte{0x01, byte(len(n)), byte(len(n) >> 8)}
+		b = append(b, n...)
+		return append(b, val)
+	}
+
+	// Check if experiments compound already present
+	expName := []byte("experiments")
+	marker := append([]byte{0x0A, byte(len(expName)), 0x00}, expName...)
+	expIdx := bytes.Index(nbt, marker)
+
+	if expIdx >= 0 {
+		// Compound exists — ensure gametest=1 inside it
+		inner := nbt[expIdx+len(marker):]
+		gtag := append([]byte{0x01, 0x08, 0x00}, []byte("gametest")...)
+		gi := bytes.Index(inner, gtag)
+		if gi >= 0 && gi+len(gtag) < len(inner) {
+			if inner[gi+len(gtag)] == 1 {
+				return nil // already enabled
+			}
+			// Patch in place
+			nbt[expIdx+len(marker)+gi+len(gtag)] = 1
+		} else {
+			// Insert gametest tag before TAG_End of experiments compound
+			endIdx := bytes.IndexByte(inner, 0x00)
+			if endIdx < 0 {
+				return nil
+			}
+			absEnd := expIdx + len(marker) + endIdx
+			patch := byteTag("gametest", 1)
+			nbt = append(nbt[:absEnd], append(patch, nbt[absEnd:]...)...)
+		}
+	} else {
+		// No experiments compound — insert one before root TAG_End (last byte)
+		if len(nbt) == 0 || nbt[len(nbt)-1] != 0x00 {
+			return nil
+		}
+		var exp bytes.Buffer
+		exp.Write(marker)
+		exp.Write(byteTag("experiments_ever_used", 1))
+		exp.Write(byteTag("saved_with_toggled_experiments", 1))
+		exp.Write(byteTag("gametest", 1))
+		exp.WriteByte(0x00) // TAG_End for experiments compound
+		nbt = append(nbt[:len(nbt)-1], append(exp.Bytes(), 0x00)...)
+	}
+
+	// Write back with updated length in header
+	out := make([]byte, 8+len(nbt))
+	copy(out[:8], data[:8])
+	binary.LittleEndian.PutUint32(out[4:], uint32(len(nbt)))
+	copy(out[8:], nbt)
+	return os.WriteFile(path, out, 0644)
+}
 
 func formatDuration(d time.Duration) string {
 	h := int(d.Hours())
