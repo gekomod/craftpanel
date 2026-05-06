@@ -4,14 +4,16 @@ const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
 function HealthBar({ value, max }) {
   if (!value || !max) return <span style={{ color: 'var(--text-4)', fontSize: 12 }}>—</span>;
-  const pct = Math.max(0, Math.min(100, (value / max) * 100));
-  const color = pct > 60 ? '#4ade80' : pct > 30 ? '#fbbf24' : '#f87171';
+  const totalHearts = Math.round(max / 2);
+  const fullHearts  = Math.floor(value / 2);
+  const halfHeart   = (value % 2) >= 1 ? 1 : 0;
+  const emptyHearts = totalHearts - fullHearts - halfHeart;
+  const color = value / max > 0.6 ? '#f87171' : value / max > 0.3 ? '#fca5a5' : '#fecaca';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <div style={{ width: 60, height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
-        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 3, transition: 'width 0.4s' }}/>
-      </div>
-      <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 28 }}>{Math.round(value)}/{Math.round(max)}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap', maxWidth: 120 }}>
+      {Array.from({ length: fullHearts  }).map((_, i) => <span key={'f'+i} style={{ color: '#ef4444', fontSize: 13, lineHeight: 1 }}>♥</span>)}
+      {halfHeart === 1 &&                                  <span style={{ color, fontSize: 13, lineHeight: 1 }}>♥</span>}
+      {Array.from({ length: emptyHearts }).map((_, i) => <span key={'e'+i} style={{ color: 'var(--text-4)', fontSize: 13, lineHeight: 1 }}>♡</span>)}
     </div>
   );
 }
