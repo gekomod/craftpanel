@@ -4,65 +4,95 @@ const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
 function PlayersTab({ serverId }) {
   const [players, setPlayers] = useState([]);
+  const [filter, setFilter] = useState('all');
+
+  const load = () => {
+    fetch(`${API}/api/servers/${serverId}/players`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setPlayers(d))
+      .catch(() => {});
+  };
+
   useEffect(() => {
-    fetch(`${API}/api/servers/${serverId}/players`).then(r => r.ok ? r.json() : null).then(d => d && setPlayers(d)).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
   }, [serverId]);
 
+  const online  = players.filter(p => p.online);
+  const offline = players.filter(p => !p.online);
+  const shown   = filter === 'online' ? online : filter === 'offline' ? offline : players;
+
   return (
-    <div className="card" style={{ overflow: 'hidden' }}>
-      <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between' }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Online · {players.length} graczy</h3>
-          <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
-            {players.filter(p => p.op).length} OPs · {players.filter(p => p.status === 'vip').length} VIPs · {players.filter(p => !p.op && p.status !== 'vip').length} graczy
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)', padding: 'var(--pad)' }}>
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+              Gracze · <span style={{ color: 'var(--online)' }}>{online.length} online</span>
+              {offline.length > 0 && <span style={{ color: 'var(--text-4)', fontWeight: 400, fontSize: 12, marginLeft: 8 }}>/ {offline.length} w historii</span>}
+            </h3>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+              {online.filter(p => p.op).length > 0 && `${online.filter(p => p.op).length} OPs · `}
+              Odświeżanie co 5s
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[['all','Wszyscy'], ['online','Online'], ['offline','Historia']].map(([v, l]) => (
+              <button key={v} className={`btn btn-sm ${filter === v ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFilter(v)}>{l}</button>
+            ))}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button className="btn btn-sm"><I2 name="shield" size={13}/> Whitelist</button>
-          <button className="btn btn-sm"><I2 name="x" size={13}/> Banlist</button>
-          <button className="btn btn-sm"><I2 name="search" size={13}/></button>
-        </div>
-      </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: 'var(--bg-1)' }}>
-            <Th>Gracz</Th><Th>Status</Th><Th>Świat</Th><Th>Ping</Th>
-            <Th>Czas gry</Th><Th>Health</Th><Th align="right">Akcje</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {players.map((p, i) => (
-            <tr key={p.uuid || i} style={{ borderTop: '1px solid var(--line-1)' }}>
-              <Td>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <Av name={p.name} skin={p.skin} size={32}/>
-                  <div>
-                    <div style={{ fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-4)' }} className="mono">{p.uuid}</div>
-                  </div>
-                </div>
-              </Td>
-              <Td>
-                {p.op && <span className="chip" style={{ background: 'rgba(248,113,113,0.12)', color: '#fca5a5', borderColor: 'rgba(248,113,113,0.25)' }}><I2 name="crown" size={10}/> OP</span>}
-                {p.status === 'vip' && <span className="chip" style={{ background: 'rgba(251,191,36,0.10)', color: '#fcd34d', borderColor: 'rgba(251,191,36,0.25)' }}>VIP</span>}
-                {!p.op && p.status !== 'vip' && <span className="chip">Player</span>}
-              </Td>
-              <Td><span className="mono" style={{ fontSize: 12 }}>{p.world}</span></Td>
-              <Td><span className="mono" style={{ color: p.ping > 100 ? 'var(--warn)' : 'var(--text-2)' }}>{p.ping}ms</span></Td>
-              <Td><span className="mono">{p.playtime}</span></Td>
-              <Td><H value={70 + ((p.uuid || p.name || '?').charCodeAt(0) % 30)}/></Td>
-              <Td align="right">
-                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
-                  <button className="btn btn-sm btn-ghost">OP</button>
-                  <button className="btn btn-sm btn-ghost">Kick</button>
-                  <button className="btn btn-sm btn-danger">Ban</button>
-                </div>
-              </Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        {shown.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>
+            {filter === 'online' ? 'Brak graczy online' : 'Brak danych o graczach'}
+          </div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-1)' }}>
+                <Th>Gracz</Th><Th>Status</Th><Th>UUID / XUID</Th>
+                <Th>Dołączył</Th><Th>Czas sesji</Th><Th align="right">Akcje</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((p, i) => (
+                <tr key={p.identifier || i} style={{ borderTop: '1px solid var(--line-1)', opacity: p.online ? 1 : 0.55 }}>
+                  <Td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <Av name={p.name} size={32}/>
+                      <div>
+                        <div style={{ fontWeight: 500 }}>{p.name}</div>
+                        {p.op && <span style={{ fontSize: 10, background: 'rgba(248,113,113,0.15)', color: '#fca5a5', padding: '1px 5px', borderRadius: 4 }}>OP</span>}
+                      </div>
+                    </div>
+                  </Td>
+                  <Td>
+                    <span className={`chip ${p.online ? 'chip-online' : 'chip-offline'}`}>
+                      {p.online ? '● Online' : '○ Offline'}
+                    </span>
+                  </Td>
+                  <Td><span className="mono" style={{ fontSize: 11, color: 'var(--text-4)' }}>{p.identifier || '—'}</span></Td>
+                  <Td><span style={{ fontSize: 12 }}>{p.joined_at ? new Date(p.joined_at).toLocaleString('pl-PL', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '—'}</span></Td>
+                  <Td><span className="mono" style={{ color: p.online ? 'var(--online)' : 'var(--text-4)' }}>{p.playtime || '—'}</span></Td>
+                  <Td align="right">
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                      <button className="btn btn-sm btn-ghost" title="Kick" onClick={() => {
+                        fetch(`${API}/api/servers/${serverId}/command`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ command: `kick ${p.name}` }) });
+                      }}><I2 name="x" size={12}/></button>
+                      <button className="btn btn-sm btn-danger" title="Ban" onClick={() => {
+                        if (confirm(`Banować gracza ${p.name}?`))
+                          fetch(`${API}/api/servers/${serverId}/command`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ command: `ban ${p.name}` }) });
+                      }}><I2 name="shield" size={12}/></button>
+                    </div>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }

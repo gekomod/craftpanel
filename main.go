@@ -88,9 +88,11 @@ type Server struct {
 type Player struct {
 	Name       string `json:"name"`
 	Identifier string `json:"identifier"` // UUID (Java) or XUID (Bedrock)
+	UUID       string `json:"uuid"`        // alias for identifier, for frontend compat
 	Online     bool   `json:"online"`
-	World      string `json:"world"`
+	Op         bool   `json:"op"`
 	JoinedAt   string `json:"joined_at,omitempty"`
+	Playtime   string `json:"playtime,omitempty"`
 }
 
 type Plugin struct {
@@ -1125,6 +1127,15 @@ func readProcRAM(pid int) int64 {
 
 var reHTML = regexp.MustCompile(`<[^>]+>`)
 
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
 func stripHTML(s string) string {
 	s = reHTML.ReplaceAllString(s, "")
 	s = strings.ReplaceAll(s, "&amp;", "&")
@@ -1417,8 +1428,29 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 	}
 	ms.mu.RUnlock()
 
+	// Load ops list for Java servers
+	ops := map[string]bool{}
+	if ms.Config.IsJava() {
+		if data, err := os.ReadFile(filepath.Join(ms.Config.Directory, "ops.json")); err == nil {
+			var list []struct{ Name string `json:"name"` }
+			if json.Unmarshal(data, &list) == nil {
+				for _, o := range list {
+					ops[o.Name] = true
+				}
+			}
+		}
+	}
+
+	now := time.Now()
 	for i := range players {
 		players[i].Online = online[players[i].Name]
+		players[i].UUID = players[i].Identifier
+		players[i].Op = ops[players[i].Name]
+		if players[i].Online && players[i].JoinedAt != "" {
+			if t, err := time.Parse(time.RFC3339, players[i].JoinedAt); err == nil {
+				players[i].Playtime = formatDuration(now.Sub(t))
+			}
+		}
 	}
 
 	if players == nil {
