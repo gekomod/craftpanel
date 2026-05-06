@@ -14,6 +14,7 @@ function InstallerModal({ onClose, onAdded }) {
   const [versions, setVersions] = useState([]);
   const [selVersion, setSelVersion] = useState('');
   const [bedrockInfo, setBedrockInfo] = useState(null);
+  const [manualUrl, setManualUrl] = useState('');
   const [jobId, setJobId] = useState(null);
   const [progress, setProgress] = useState({ phase: 'pending', pct: 0, error: '' });
 
@@ -43,7 +44,7 @@ function InstallerModal({ onClose, onAdded }) {
       id,
       name: form.name,
       version: selVersion,
-      download_url: bedrockInfo?.download_url || '',
+      download_url: bedrockInfo?.download_url || manualUrl || '',
       port: parseInt(form.port) || (serverType === 'bedrock' ? 19132 : 25565),
       ram: parseInt(form.ram) || 2,
       rcon_port: 25575,
@@ -129,7 +130,7 @@ function InstallerModal({ onClose, onAdded }) {
         <div style={{ padding: 24, minHeight: 280 }}>
           {step === STEP_TYPE    && <StepType serverType={serverType} setServerType={setServerType}/>}
           {step === STEP_CONFIG  && <StepConfig form={form} setField={setField} serverType={serverType} serverId={serverId}/>}
-          {step === STEP_VERSION && <StepVersion serverType={serverType} versions={versions} selVersion={selVersion} setSelVersion={setSelVersion} bedrockInfo={bedrockInfo}/>}
+          {step === STEP_VERSION && <StepVersion serverType={serverType} versions={versions} selVersion={selVersion} setSelVersion={setSelVersion} bedrockInfo={bedrockInfo} manualUrl={manualUrl} setManualUrl={setManualUrl}/>}
           {step === STEP_INSTALL && <StepInstall progress={progress}/>}
           {step === STEP_DONE    && <StepDone onClose={onClose}/>}
         </div>
@@ -144,7 +145,10 @@ function InstallerModal({ onClose, onAdded }) {
               if (step === STEP_TYPE) setStep(STEP_CONFIG);
               else if (step === STEP_CONFIG) { if (form.name.trim()) goToVersion(); }
               else if (step === STEP_VERSION) startInstall();
-            }} disabled={step === STEP_CONFIG && !form.name.trim()}>
+            }} disabled={
+              (step === STEP_CONFIG && !form.name.trim()) ||
+              (step === STEP_VERSION && serverType === 'bedrock' && !bedrockInfo?.download_url && !manualUrl.trim())
+            }>
               {step === STEP_VERSION ? <><II name="download" size={14}/> Zainstaluj</> : <><II name="arrow-right" size={14}/> Dalej</>}
             </button>
           </div>
@@ -224,22 +228,55 @@ function StepConfig({ form, setField, serverType, serverId }) {
   );
 }
 
-function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockInfo }) {
+function StepVersion({ serverType, versions, selVersion, setSelVersion, bedrockInfo, manualUrl, setManualUrl }) {
   if (serverType === 'bedrock') {
+    if (!bedrockInfo) {
+      return (
+        <div style={{ color: 'var(--text-3)', fontSize: 13, padding: 40, textAlign: 'center' }}>
+          <II name="loader" size={20}/> Pobieranie informacji o wersji...
+        </div>
+      );
+    }
+
+    const hasUrl = !!bedrockInfo.download_url;
+
     return (
-      <div style={{ textAlign: 'center', padding: '20px 0' }}>
-        {bedrockInfo ? (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '20px 0' }}>
+        <div style={{ width: 64, height: 64, borderRadius: 16, background: 'rgba(96,165,250,0.12)', color: '#60a5fa', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <II name="layers" size={28}/>
+        </div>
+        {hasUrl ? (
           <>
-            <div style={{ width: 64, height: 64, borderRadius: 16, background: 'rgba(96,165,250,0.12)', color: '#60a5fa', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-              <II name="layers" size={28}/>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>Bedrock Server {bedrockInfo.version}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6 }}>Oficjalny serwer Mojang · Linux x64</div>
+              <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 4 }} className="mono">{bedrockInfo.download_url}</div>
             </div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>Bedrock Server {bedrockInfo.version}</div>
-            <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6 }}>Oficjalny serwer Mojang · Linux x64</div>
-            <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 4 }} className="mono">{bedrockInfo.download_url}</div>
           </>
         ) : (
-          <div style={{ color: 'var(--text-3)', fontSize: 13, padding: 40 }}>
-            <II name="loader" size={20}/> Pobieranie informacji o wersji...
+          <div style={{ width: '100%' }}>
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>Nie udało się pobrać linku automatycznie</div>
+              <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
+                Pobierz ręcznie link .zip z{' '}
+                <span className="mono" style={{ color: 'var(--text-2)' }}>minecraft.net/download/server/bedrock</span>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', alignItems: 'center', gap: 12 }}>
+              <label style={{ fontSize: 13, color: 'var(--text-2)', fontWeight: 500 }}>URL .zip</label>
+              <input
+                className="input mono"
+                style={{ fontSize: 12 }}
+                placeholder="https://minecraft.azureedge.net/bin-linux/bedrock-server-x.x.x.x.zip"
+                value={manualUrl}
+                onChange={e => setManualUrl(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--bg-1)', borderRadius: 8, fontSize: 12, color: 'var(--text-3)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <II name="info" size={13}/>
+              Wejdź na stronę Minecraft, kliknij "Pobierz" i skopiuj link do pliku <span className="mono">.zip</span>
+            </div>
           </div>
         )}
       </div>

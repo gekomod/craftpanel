@@ -1960,52 +1960,70 @@ func handleJavaVersions(w http.ResponseWriter, r *http.Request) {
 func handleBedrockInfo(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// Try minecraft.net page first
-	urls := []string{
-		"https://www.minecraft.net/en-us/download/server/bedrock/",
-		"https://www.minecraft.net/download/server/bedrock/",
-	}
-	// Broader regex covering different CDN patterns
-	re := regexp.MustCompile(`https://[^"'\s<>]+bedrock-server-([\d.]+)\.zip`)
+	zipRe := regexp.MustCompile(`https://[^\s"'<>\\]+/bin-linux/bedrock-server-([\d.]+)\.zip`)
 
-	for _, pageURL := range urls {
+	tryPage := func(pageURL string) (string, string) {
 		req2, _ := http.NewRequest("GET", pageURL, nil)
-		req2.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req2.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
 		req2.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req2.Header.Set("Accept-Language", "en-US,en;q=0.5")
 		resp, err := client.Do(req2)
 		if err != nil {
-			continue
+			return "", ""
 		}
+		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		matches := re.FindStringSubmatch(string(body))
-		if len(matches) >= 2 {
-			jsonResp(w, map[string]string{
-				"version":      matches[1],
-				"download_url": matches[0],
-			})
+		m := zipRe.FindStringSubmatch(string(body))
+		if len(m) >= 2 {
+			return m[1], m[0]
+		}
+		return "", ""
+	}
+
+	for _, u := range []string{
+		"https://www.minecraft.net/en-us/download/server/bedrock/",
+		"https://www.minecraft.net/download/server/bedrock",
+		"https://www.minecraft.net/en-us/download/server/bedrock",
+	} {
+		if ver, dlURL := tryPage(u); ver != "" {
+			jsonResp(w, map[string]string{"version": ver, "download_url": dlURL})
 			return
 		}
 	}
 
-	// Fallback: try fetching from a version JSON file
-	resp2, err := client.Get("https://raw.githubusercontent.com/nicowillis/minecraft-bedrock-updater/main/version.json")
-	if err == nil {
-		var data struct {
-			Linux string `json:"linux"`
+	// Fallback: community tracker JSON
+	type tracker struct {
+		Linux   string `json:"linux"`
+		URL     string `json:"url"`
+		Version string `json:"version"`
+	}
+	trackers := []string{
+		"https://raw.githubusercontent.com/nicowillis/minecraft-bedrock-updater/main/version.json",
+		"https://raw.githubusercontent.com/bedrock-server-updates/bedrock-server-updates/main/latest.json",
+	}
+	for _, tu := range trackers {
+		resp, err := client.Get(tu)
+		if err != nil {
+			continue
 		}
-		if json.NewDecoder(resp2.Body).Decode(&data) == nil && data.Linux != "" {
-			resp2.Body.Close()
-			ver := regexp.MustCompile(`bedrock-server-([\d.]+)\.zip`).FindStringSubmatch(data.Linux)
-			if len(ver) >= 2 {
-				jsonResp(w, map[string]string{"version": ver[1], "download_url": data.Linux})
+		var t tracker
+		json.NewDecoder(resp.Body).Decode(&t)
+		resp.Body.Close()
+		dlURL := t.Linux
+		if dlURL == "" {
+			dlURL = t.URL
+		}
+		if dlURL != "" {
+			m := regexp.MustCompile(`bedrock-server-([\d.]+)\.zip`).FindStringSubmatch(dlURL)
+			if len(m) >= 2 {
+				jsonResp(w, map[string]string{"version": m[1], "download_url": dlURL})
 				return
 			}
 		}
-		resp2.Body.Close()
 	}
 
-	jsonErr(w, "Nie można pobrać adresu URL Bedrock. Sprawdź połączenie internetowe serwera.", 502)
+	// Return empty so UI can show manual input
+	jsonResp(w, map[string]string{"version": "", "download_url": ""})
 }
 
 func (a *App) handleInstallStart(w http.ResponseWriter, r *http.Request) {
