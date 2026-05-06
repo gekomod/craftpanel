@@ -2127,15 +2127,36 @@ func handleInstallJobStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
 
-	// Send current state immediately
-	job.mu.Lock()
-	job.emit()
-	job.mu.Unlock()
-
+	// Subscribe FIRST, then read current state — prevents missing events
 	ch := job.subscribe()
 	defer job.unsub(ch)
+
+	job.mu.Lock()
+	phase := job.phase
+	progress := job.progress
+	total := job.total
+	errMsg := job.errMsg
+	job.mu.Unlock()
+
+	pct := 0.0
+	if total > 0 {
+		pct = float64(progress) / float64(total) * 100
+	}
+	if phase == "done" {
+		pct = 100
+	}
+	snap, _ := json.Marshal(map[string]any{
+		"phase": phase, "progress": progress, "total": total, "pct": pct, "error": errMsg,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", snap)
+	flusher.Flush()
+	if phase == "done" || phase == "error" {
+		return
+	}
+
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 

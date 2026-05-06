@@ -63,18 +63,23 @@ function InstallerModal({ onClose, onAdded }) {
   };
 
   const watchJob = (id) => {
+    let finished = false;
     const src = new EventSource(`/api/install/jobs/${id}/stream`, { withCredentials: true });
     src.onmessage = (e) => {
       const d = JSON.parse(e.data);
       setProgress({ phase: d.phase, pct: d.pct || 0, error: d.error || '' });
       if (d.phase === 'done' || d.phase === 'error') {
+        finished = true;
         src.close();
         if (d.phase === 'done') { onAdded(); setStep(STEP_DONE); }
       }
     };
     src.onerror = () => {
       src.close();
-      setProgress(p => ({ ...p, phase: 'error', error: 'Utracono połączenie' }));
+      // onerror also fires on normal stream close — only report if we never got a terminal event
+      if (!finished) {
+        setProgress(p => ({ ...p, phase: 'error', error: 'Utracono połączenie z serwerem' }));
+      }
     };
   };
 
