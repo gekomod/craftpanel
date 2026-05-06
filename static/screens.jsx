@@ -488,7 +488,7 @@ function ServerDetailScreen({ serverId, servers, navigate }) {
       {tab === 'overview' && <OverviewTab server={server} statHistory={statHistory}/>}
       {tab === 'console' && <ConsoleTab serverId={server.id}/>}
       {tab === 'players' && <PlayersTab serverId={server.id}/>}
-      {tab === 'plugins' && <PluginsTab serverId={server.id}/>}
+      {tab === 'plugins' && <PluginsTab serverId={server.id} isBedrock={server.type === 'bedrock'}/>}
       {tab === 'files' && <FilesTab serverId={server.id}/>}
       {tab === 'backups' && <BackupsTab serverId={server.id}/>}
       {tab === 'settings' && <SettingsTab server={server}/>}

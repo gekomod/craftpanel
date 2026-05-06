@@ -1985,8 +1985,8 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 					dlURL := ""
 					if len(p.LatestFilesIndexes) > 0 {
 						fi := p.LatestFilesIndexes[0]
-						// CurseForge CDN URL: /files/{id/1000}/{id%1000 padded}/{filename}
-						dlURL = fmt.Sprintf("https://www.curseforge.com/api/v1/mods/%d/files/%d/download", p.ID, fi.FileID)
+						// Use API endpoint so we can resolve with auth in install handler
+						dlURL = fmt.Sprintf("https://api.curseforge.com/v1/mods/%d/files/%d/download-url", p.ID, fi.FileID)
 					}
 					results = append(results, PluginResult{
 						Name:        p.Name,
@@ -2123,14 +2123,24 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		dlURL = scraped
 
 	case "curseforge":
-		// CurseForge download endpoint redirects to the actual CDN file — follow it
+		// Resolve api.curseforge.com/v1/mods/{id}/files/{id}/download-url → actual CDN URL
+		a.mu.RLock()
+		cfKey := a.config.CurseForgeAPIKey
+		a.mu.RUnlock()
 		cfReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
-		cfReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
-		cfReq.Header.Set("Accept", "*/*")
+		cfReq.Header.Set("User-Agent", "CraftPanel/1.0")
+		cfReq.Header.Set("Accept", "application/json")
+		if cfKey != "" {
+			cfReq.Header.Set("x-api-key", cfKey)
+		}
 		if cfResp, err := http.DefaultClient.Do(cfReq); err == nil {
+			var result struct {
+				Data string `json:"data"`
+			}
+			if json.NewDecoder(cfResp.Body).Decode(&result) == nil && result.Data != "" {
+				dlURL = result.Data
+			}
 			cfResp.Body.Close()
-			// After following redirects the final URL is the CDN link
-			dlURL = cfResp.Request.URL.String()
 		}
 	}
 
@@ -2192,6 +2202,66 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	io.Copy(f, resp.Body)
 	jsonResp(w, map[string]string{"status": "ok", "file": fname})
+}
+
+func (a *App) handlePackUpload(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "nie znaleziono serwera", 404)
+		return
+	}
+	if ms.Config.Type != "bedrock" {
+		jsonErr(w, "upload działa tylko dla Bedrock", 400)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<20) // 256 MB limit
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		jsonErr(w, "Błąd parsowania formularza: "+err.Error(), 400)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		jsonErr(w, "Brak pliku w żądaniu", 400)
+		return
+	}
+	defer file.Close()
+
+	fname := header.Filename
+	ext := strings.ToLower(filepath.Ext(fname))
+	allowed := map[string]bool{".mcpack": true, ".mcaddon": true, ".mcworld": true, ".mctemplate": true, ".zip": true}
+	if !allowed[ext] {
+		jsonErr(w, "Nieobsługiwany format pliku. Dozwolone: .mcpack, .mcaddon, .mcworld, .mctemplate, .zip", 400)
+		return
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		jsonErr(w, "Błąd odczytu pliku: "+err.Error(), 500)
+		return
+	}
+	if len(data) < 4 || data[0] != 0x50 || data[1] != 0x4B || data[2] != 0x03 || data[3] != 0x04 {
+		jsonErr(w, "Plik nie jest prawidłowym archiwum ZIP", 400)
+		return
+	}
+
+	if ext == ".mcworld" || ext == ".mctemplate" {
+		name, err := installMcWorld(ms.Config.Directory, data, fname)
+		if err != nil {
+			jsonErr(w, "Błąd instalacji świata: "+err.Error(), 500)
+			return
+		}
+		jsonResp(w, map[string]string{"status": "ok", "file": name, "type": "world"})
+		return
+	}
+
+	// .mcpack / .mcaddon / .zip — treat as pack
+	installed, err := installBedrockPack(ms.Config.Directory, data, fname)
+	if err != nil {
+		jsonErr(w, "Błąd instalacji: "+err.Error(), 500)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "ok", "file": installed, "type": "pack"})
 }
 
 type bedrockManifest struct {
@@ -2342,6 +2412,66 @@ func installMcAddon(serverDir string, data []byte) (string, error) {
 		return "", fmt.Errorf("brak plików .mcpack wewnątrz archiwum")
 	}
 	return strings.Join(installed, ", "), nil
+}
+
+// installMcWorld extracts a .mcworld (zip) to worlds/{worldName}/ in the server directory.
+func installMcWorld(serverDir string, data []byte, fname string) (string, error) {
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+
+	// Determine world name: use fname without extension, or root folder inside zip
+	worldName := strings.TrimSuffix(fname, filepath.Ext(fname))
+	if worldName == "" {
+		worldName = "Imported World"
+	}
+	// If all files share a common root folder, use that as the world name
+	if len(r.File) > 0 {
+		firstParts := strings.SplitN(r.File[0].Name, "/", 2)
+		if len(firstParts) > 1 {
+			allSameRoot := true
+			root := firstParts[0]
+			for _, f := range r.File {
+				if !strings.HasPrefix(f.Name, root+"/") {
+					allSameRoot = false
+					break
+				}
+			}
+			if allSameRoot && root != "" {
+				worldName = root
+			}
+		}
+	}
+
+	destDir := filepath.Join(serverDir, "worlds", worldName)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return "", err
+	}
+
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		name := f.Name
+		// Strip common root folder if present
+		if parts := strings.SplitN(name, "/", 2); len(parts) == 2 && parts[0] == worldName {
+			name = parts[1]
+		}
+		if name == "" {
+			continue
+		}
+		destPath := filepath.Join(destDir, filepath.FromSlash(name))
+		os.MkdirAll(filepath.Dir(destPath), 0755)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		fileData, _ := io.ReadAll(rc)
+		rc.Close()
+		os.WriteFile(destPath, fileData, 0644)
+	}
+	return worldName, nil
 }
 
 // registerBedrockWorldPack adds pack UUID to world_resource_packs.json or world_behavior_packs.json
@@ -3300,6 +3430,7 @@ func main() {
 	mux.HandleFunc("GET /api/servers/{id}/plugins", app.authMW(app.handlePlugins))
 	mux.HandleFunc("GET /api/servers/{id}/plugins/search", app.authMW(app.handlePluginSearch))
 	mux.HandleFunc("POST /api/servers/{id}/plugins/install", app.authMW(app.handlePluginInstall))
+	mux.HandleFunc("POST /api/servers/{id}/plugins/upload", app.authMW(app.handlePackUpload))
 	mux.HandleFunc("GET /api/servers/{id}/files", app.authMW(app.handleFiles))
 	mux.HandleFunc("GET /api/servers/{id}/files/content", app.authMW(app.handleFileContent))
 	mux.HandleFunc("GET /api/servers/{id}/backups", app.authMW(app.handleBackups))

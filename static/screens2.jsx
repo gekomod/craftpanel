@@ -209,7 +209,7 @@ function Td({ children, align = 'left' }) {
   return <td style={{ padding: '12px 16px', textAlign: align, color: 'var(--text-2)' }}>{children}</td>;
 }
 
-function PluginsTab({ serverId, defaultTab }) {
+function PluginsTab({ serverId, defaultTab, isBedrock }) {
   const [tab, setTab] = useState(defaultTab || 'installed');
   const [plugins, setPlugins] = useState([]);
   const [sel, setSel] = useState(null);
@@ -219,6 +219,11 @@ function PluginsTab({ serverId, defaultTab }) {
   const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState('');
   const [installMsg, setInstallMsg] = useState('');
+  // Upload state
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState('');
+  const uploadRef = React.useRef();
 
   const loadPlugins = useCallback(() => {
     fetch(`${API}/api/servers/${serverId}/plugins`)
@@ -255,16 +260,41 @@ function PluginsTab({ serverId, defaultTab }) {
     setInstalling('');
   };
 
+  const uploadPack = async () => {
+    if (!uploadFile) return;
+    setUploading(true);
+    setUploadMsg('');
+    try {
+      const fd = new FormData();
+      fd.append('file', uploadFile);
+      const r = await fetch(`/api/servers/${serverId}/plugins/upload`, { method: 'POST', body: fd });
+      const d = await r.json();
+      if (r.ok) {
+        const typeLabel = d.type === 'world' ? 'Świat' : 'Paczka';
+        setUploadMsg(`✓ ${typeLabel} "${d.file}" zainstalowana`);
+        setUploadFile(null);
+        if (uploadRef.current) uploadRef.current.value = '';
+        loadPlugins();
+      } else {
+        setUploadMsg(`✗ ${d.error || 'Błąd'}`);
+      }
+    } catch (e) { setUploadMsg(`✗ ${e}`); }
+    setUploading(false);
+  };
+
   const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa', curseforge: '#f16436' };
   const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL', curseforge: 'CurseForge' };
   const isMCPEDLFallback = (p) => p.source === 'mcpedl' && p.url && p.url.includes('?s=');
   const isCFSetup = (p) => p.source === 'curseforge-setup';
 
+  const tabs = [['installed', 'puzzle', `Zainstalowane (${plugins.length})`], ['browse', 'search', 'Przeglądaj']];
+  if (isBedrock) tabs.push(['upload', 'upload', 'Wgraj plik']);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, padding: '0 var(--pad)', paddingTop: 'var(--pad)' }}>
-        {[['installed', 'puzzle', `Zainstalowane (${plugins.length})`], ['browse', 'search', 'Przeglądaj']].map(([id, icon, label]) => (
+        {tabs.map(([id, icon, label]) => (
           <button key={id} className={`tab ${tab === id ? 'tab-active' : ''}`} onClick={() => setTab(id)}>
             <I2 name={icon} size={14}/> {label}
           </button>
@@ -402,6 +432,64 @@ function PluginsTab({ serverId, defaultTab }) {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {tab === 'upload' && isBedrock && (
+        <div style={{ padding: '0 var(--pad) var(--pad)', maxWidth: 560 }}>
+          <div className="card" style={{ padding: 24 }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600 }}>Wgraj plik ręcznie</h3>
+            <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--text-3)', lineHeight: 1.5 }}>
+              Obsługiwane formaty: <code>.mcpack</code>, <code>.mcaddon</code>, <code>.mcworld</code>, <code>.mctemplate</code>, <code>.zip</code><br/>
+              Paczki zasobów i zachowania zostaną automatycznie zainstalowane i zarejestrowane w świecie.<br/>
+              Światy zostaną wypakowane do katalogu <code>worlds/</code>.
+            </p>
+
+            <div
+              style={{
+                border: '2px dashed var(--line-2)', borderRadius: 10, padding: '32px 24px',
+                textAlign: 'center', cursor: 'pointer', marginBottom: 16,
+                background: uploadFile ? 'var(--accent-bg)' : 'var(--bg-2)',
+                transition: 'all 0.15s',
+              }}
+              onClick={() => uploadRef.current?.click()}
+              onDragOver={e => e.preventDefault()}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) setUploadFile(f); }}
+            >
+              <I2 name="upload" size={28} color={uploadFile ? 'var(--accent)' : 'var(--text-4)'}/>
+              <div style={{ marginTop: 10, fontSize: 13, color: uploadFile ? 'var(--accent)' : 'var(--text-3)' }}>
+                {uploadFile ? uploadFile.name : 'Kliknij lub przeciągnij plik tutaj'}
+              </div>
+              {uploadFile && (
+                <div style={{ fontSize: 11, color: 'var(--text-4)', marginTop: 4 }}>
+                  {(uploadFile.size / 1024 / 1024).toFixed(2)} MB
+                </div>
+              )}
+              <input ref={uploadRef} type="file"
+                accept=".mcpack,.mcaddon,.mcworld,.mctemplate,.zip"
+                style={{ display: 'none' }}
+                onChange={e => setUploadFile(e.target.files[0] || null)}
+              />
+            </div>
+
+            {uploadMsg && (
+              <div style={{
+                padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13,
+                background: uploadMsg.startsWith('✓') ? 'var(--accent-bg)' : 'rgba(248,113,113,0.1)',
+                color: uploadMsg.startsWith('✓') ? 'var(--accent)' : 'var(--danger)',
+                border: `1px solid ${uploadMsg.startsWith('✓') ? 'var(--accent-line)' : 'rgba(248,113,113,0.25)'}`,
+              }}>{uploadMsg}</div>
+            )}
+
+            <button
+              className="btn btn-primary"
+              style={{ width: '100%', justifyContent: 'center' }}
+              disabled={!uploadFile || uploading}
+              onClick={uploadPack}
+            >
+              <I2 name="upload" size={14}/> {uploading ? 'Instalacja…' : 'Zainstaluj'}
+            </button>
           </div>
         </div>
       )}
