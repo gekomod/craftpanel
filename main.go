@@ -2886,9 +2886,37 @@ func installBedrock(job *installJob, downloadURL, dir string) error {
 	job.mu.Unlock()
 
 	if _, err := os.Stat(filepath.Join(dir, "server.properties")); os.IsNotExist(err) {
-		props := "server-name=CraftPanel Server\nserver-port=19132\nmax-players=10\nonline-mode=true\n"
+		props := "server-name=CraftPanel Server\nserver-port=19132\nmax-players=10\nonline-mode=true\nallow-outbound-http-requests=true\n"
 		os.WriteFile(filepath.Join(dir, "server.properties"), []byte(props), 0644)
+	} else {
+		// Ensure allow-outbound-http-requests is enabled in existing properties
+		data, err := os.ReadFile(filepath.Join(dir, "server.properties"))
+		if err == nil && !strings.Contains(string(data), "allow-outbound-http-requests") {
+			f, err := os.OpenFile(filepath.Join(dir, "server.properties"), os.O_APPEND|os.O_WRONLY, 0644)
+			if err == nil {
+				f.WriteString("\nallow-outbound-http-requests=true\n")
+				f.Close()
+			}
+		}
 	}
+
+	// Create default world directory with Beta APIs experiment enabled
+	// so Script API packs (like the health monitor) work out of the box.
+	worldDir := filepath.Join(dir, "worlds", "Bedrock level")
+	os.MkdirAll(worldDir, 0755)
+
+	experimentsJSON := `{
+  "experiments": {
+    "enable_beta_apis": true
+  },
+  "experiments_ever_used": true,
+  "saved_with_toggled_experiments": true
+}`
+	expPath := filepath.Join(worldDir, "experiments.json")
+	if _, err := os.Stat(expPath); os.IsNotExist(err) {
+		os.WriteFile(expPath, []byte(experimentsJSON), 0644)
+	}
+
 	return nil
 }
 
