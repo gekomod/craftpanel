@@ -32,8 +32,8 @@ function PlayersTab({ serverId }) {
           </tr>
         </thead>
         <tbody>
-          {players.map(p => (
-            <tr key={p.uuid} style={{ borderTop: '1px solid var(--line-1)' }}>
+          {players.map((p, i) => (
+            <tr key={p.uuid || i} style={{ borderTop: '1px solid var(--line-1)' }}>
               <Td>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <Av name={p.name} skin={p.skin} size={32}/>
@@ -51,7 +51,7 @@ function PlayersTab({ serverId }) {
               <Td><span className="mono" style={{ fontSize: 12 }}>{p.world}</span></Td>
               <Td><span className="mono" style={{ color: p.ping > 100 ? 'var(--warn)' : 'var(--text-2)' }}>{p.ping}ms</span></Td>
               <Td><span className="mono">{p.playtime}</span></Td>
-              <Td><H value={70 + (p.uuid.charCodeAt(0) % 30)}/></Td>
+              <Td><H value={70 + ((p.uuid || p.name || '?').charCodeAt(0) % 30)}/></Td>
               <Td align="right">
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                   <button className="btn btn-sm btn-ghost">OP</button>
