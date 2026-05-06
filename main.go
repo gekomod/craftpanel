@@ -2391,6 +2391,8 @@ func installMcAddon(serverDir string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	// Case 1: contains inner .mcpack files
 	var installed []string
 	for _, f := range r.File {
 		if !strings.HasSuffix(strings.ToLower(f.Name), ".mcpack") {
@@ -2403,15 +2405,104 @@ func installMcAddon(serverDir string, data []byte) (string, error) {
 		packData, _ := io.ReadAll(rc)
 		rc.Close()
 		hint := strings.TrimSuffix(path.Base(f.Name), ".mcpack")
-		name, err := extractBedrockPack(serverDir, packData, hint)
-		if err == nil {
+		if name, err := extractBedrockPack(serverDir, packData, hint); err == nil {
 			installed = append(installed, name)
 		}
 	}
+	if len(installed) > 0 {
+		return strings.Join(installed, ", "), nil
+	}
+
+	// Case 2: manifest.json at root or single top-level folder → treat as a direct pack
+	manifest, _ := readBedrockManifest(data)
+	if manifest.Header.UUID != "" {
+		return extractBedrockPack(serverDir, data, "addon")
+	}
+
+	// Case 3: multiple subdirectories each with their own manifest.json
+	dirs := map[string]struct{}{}
+	for _, f := range r.File {
+		parts := strings.SplitN(f.Name, "/", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			dirs[parts[0]] = struct{}{}
+		}
+	}
+	for dir := range dirs {
+		if name, err := extractZipSubdirPack(serverDir, r, dir); err == nil {
+			installed = append(installed, name)
+		}
+	}
+
 	if len(installed) == 0 {
-		return "", fmt.Errorf("brak plików .mcpack wewnątrz archiwum")
+		return "", fmt.Errorf("nie znaleziono paczek w archiwum")
 	}
 	return strings.Join(installed, ", "), nil
+}
+
+// extractZipSubdirPack extracts a single pack from a subdirectory inside an open zip.Reader.
+func extractZipSubdirPack(serverDir string, r *zip.Reader, dir string) (string, error) {
+	prefix := dir + "/"
+	var manifest bedrockManifest
+	for _, f := range r.File {
+		if f.Name == prefix+"manifest.json" {
+			rc, err := f.Open()
+			if err != nil {
+				break
+			}
+			json.NewDecoder(rc).Decode(&manifest)
+			rc.Close()
+			break
+		}
+	}
+	if manifest.Header.UUID == "" {
+		return "", fmt.Errorf("brak manifest.json w %s", dir)
+	}
+
+	isBehavior := false
+	for _, m := range manifest.Modules {
+		if m.Type == "data" || m.Type == "script" || m.Type == "javascript" {
+			isBehavior = true
+			break
+		}
+	}
+	packType := "resource_packs"
+	if isBehavior {
+		packType = "behavior_packs"
+	}
+
+	destDir := filepath.Join(serverDir, packType, manifest.Header.UUID)
+	os.MkdirAll(destDir, 0755)
+
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() || !strings.HasPrefix(f.Name, prefix) {
+			continue
+		}
+		relName := f.Name[len(prefix):]
+		if relName == "" {
+			continue
+		}
+		destPath := filepath.Join(destDir, filepath.FromSlash(relName))
+		os.MkdirAll(filepath.Dir(destPath), 0755)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		fileData, _ := io.ReadAll(rc)
+		rc.Close()
+		os.WriteFile(destPath, fileData, 0644)
+	}
+
+	ver := manifest.Header.Version
+	if len(ver) == 0 {
+		ver = []int{1, 0, 0}
+	}
+	registerBedrockWorldPack(serverDir, manifest.Header.UUID, ver, isBehavior)
+
+	name := manifest.Header.Name
+	if name == "" {
+		name = dir
+	}
+	return name, nil
 }
 
 // installMcWorld extracts a .mcworld (zip) to worlds/{worldName}/ in the server directory.
