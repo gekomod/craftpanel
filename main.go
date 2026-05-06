@@ -1478,7 +1478,21 @@ func (a *App) handlePlugins(w http.ResponseWriter, r *http.Request) {
 				if !e.IsDir() {
 					continue
 				}
-				plugins = append(plugins, Plugin{Name: e.Name(), Enabled: true})
+				pl := Plugin{Name: e.Name(), Enabled: true}
+				// Read manifest.json for display name and version
+				mPath := filepath.Join(ms.Config.Directory, dir, e.Name(), "manifest.json")
+				if raw, err := os.ReadFile(mPath); err == nil {
+					var m bedrockManifest
+					if json.Unmarshal(raw, &m) == nil {
+						if m.Header.Name != "" {
+							pl.Name = m.Header.Name
+						}
+						if len(m.Header.Version) >= 3 {
+							pl.Version = fmt.Sprintf("%d.%d.%d", m.Header.Version[0], m.Header.Version[1], m.Header.Version[2])
+						}
+					}
+				}
+				plugins = append(plugins, pl)
 			}
 		}
 	} else {
@@ -1885,21 +1899,125 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]string{"status": "ok", "file": fname})
 }
 
-// installBedrockPack installs a .mcpack/.mcaddon/.zip to the correct Bedrock directory
-// by reading manifest.json inside to detect resource vs behavior pack.
+type bedrockManifest struct {
+	Header struct {
+		UUID    string `json:"uuid"`
+		Name    string `json:"name"`
+		Version []int  `json:"version"`
+	} `json:"header"`
+	Modules []struct {
+		Type string `json:"type"`
+	} `json:"modules"`
+}
+
+func readBedrockManifest(data []byte) (bedrockManifest, string) {
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return bedrockManifest{}, ""
+	}
+	// Detect single top-level folder prefix (e.g. "PackName/manifest.json")
+	prefix := ""
+	for _, f := range r.File {
+		if strings.HasSuffix(f.Name, "manifest.json") {
+			idx := strings.LastIndex(f.Name, "/")
+			if idx > 0 {
+				prefix = f.Name[:idx+1]
+			}
+			break
+		}
+	}
+	for _, f := range r.File {
+		if f.Name != "manifest.json" && f.Name != prefix+"manifest.json" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			break
+		}
+		var m bedrockManifest
+		json.NewDecoder(rc).Decode(&m)
+		rc.Close()
+		return m, prefix
+	}
+	return bedrockManifest{}, prefix
+}
+
+// installBedrockPack extracts a .mcpack/.zip into the correct Bedrock folder
+// and registers it in the active world config.
 func installBedrockPack(serverDir string, data []byte, fname string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(fname))
 	if ext == ".mcaddon" {
-		// mcaddon is a zip of mcpack files — extract and install each one
 		return installMcAddon(serverDir, data)
 	}
-	// Single pack: detect type from manifest and install
-	destDir := bedrockPackDir(serverDir, data)
+	return extractBedrockPack(serverDir, data, strings.TrimSuffix(fname, filepath.Ext(fname)))
+}
+
+func extractBedrockPack(serverDir string, data []byte, folderHint string) (string, error) {
+	manifest, prefix := readBedrockManifest(data)
+
+	isBehavior := false
+	for _, m := range manifest.Modules {
+		if m.Type == "data" || m.Type == "script" || m.Type == "javascript" {
+			isBehavior = true
+			break
+		}
+	}
+
+	packType := "resource_packs"
+	if isBehavior {
+		packType = "behavior_packs"
+	}
+
+	folderName := manifest.Header.UUID
+	if folderName == "" {
+		folderName = folderHint
+	}
+	destDir := filepath.Join(serverDir, packType, folderName)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return "", err
 	}
-	dest := filepath.Join(destDir, fname)
-	return fname, os.WriteFile(dest, data, 0644)
+
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		// Strip top-level folder prefix if present
+		name := f.Name
+		if prefix != "" && strings.HasPrefix(name, prefix) {
+			name = name[len(prefix):]
+		}
+		if name == "" {
+			continue
+		}
+		destPath := filepath.Join(destDir, filepath.FromSlash(name))
+		os.MkdirAll(filepath.Dir(destPath), 0755)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		fileData, _ := io.ReadAll(rc)
+		rc.Close()
+		os.WriteFile(destPath, fileData, 0644)
+	}
+
+	// Register UUID in world config so Bedrock actually loads the pack
+	if manifest.Header.UUID != "" {
+		ver := manifest.Header.Version
+		if len(ver) == 0 {
+			ver = []int{1, 0, 0}
+		}
+		registerBedrockWorldPack(serverDir, manifest.Header.UUID, ver, isBehavior)
+	}
+
+	name := manifest.Header.Name
+	if name == "" {
+		name = folderName
+	}
+	return name, nil
 }
 
 // installMcAddon extracts inner .mcpack files from a .mcaddon bundle
@@ -1919,11 +2037,11 @@ func installMcAddon(serverDir string, data []byte) (string, error) {
 		}
 		packData, _ := io.ReadAll(rc)
 		rc.Close()
-		destDir := bedrockPackDir(serverDir, packData)
-		os.MkdirAll(destDir, 0755)
-		packName := path.Base(f.Name)
-		os.WriteFile(filepath.Join(destDir, packName), packData, 0644)
-		installed = append(installed, packName)
+		hint := strings.TrimSuffix(path.Base(f.Name), ".mcpack")
+		name, err := extractBedrockPack(serverDir, packData, hint)
+		if err == nil {
+			installed = append(installed, name)
+		}
 	}
 	if len(installed) == 0 {
 		return "", fmt.Errorf("brak plików .mcpack wewnątrz archiwum")
@@ -1931,35 +2049,42 @@ func installMcAddon(serverDir string, data []byte) (string, error) {
 	return strings.Join(installed, ", "), nil
 }
 
-// bedrockPackDir returns resource_packs or behavior_packs based on manifest.json content
-func bedrockPackDir(serverDir string, data []byte) string {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+// registerBedrockWorldPack adds pack UUID to world_resource_packs.json or world_behavior_packs.json
+// for every world in the worlds/ directory.
+func registerBedrockWorldPack(serverDir, uuid string, version []int, isBehavior bool) {
+	worldsDir := filepath.Join(serverDir, "worlds")
+	entries, err := os.ReadDir(worldsDir)
 	if err != nil {
-		return filepath.Join(serverDir, "resource_packs")
+		return
 	}
-	for _, f := range r.File {
-		if f.Name != "manifest.json" && !strings.HasSuffix(f.Name, "/manifest.json") {
+	configName := "world_resource_packs.json"
+	if isBehavior {
+		configName = "world_behavior_packs.json"
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
 			continue
 		}
-		rc, err := f.Open()
-		if err != nil {
-			break
+		cfgPath := filepath.Join(worldsDir, e.Name(), configName)
+		var packs []map[string]any
+		if raw, err := os.ReadFile(cfgPath); err == nil {
+			json.Unmarshal(raw, &packs)
 		}
-		var manifest struct {
-			Modules []struct {
-				Type string `json:"type"`
-			} `json:"modules"`
-		}
-		json.NewDecoder(rc).Decode(&manifest)
-		rc.Close()
-		for _, m := range manifest.Modules {
-			if m.Type == "data" || m.Type == "script" || m.Type == "javascript" {
-				return filepath.Join(serverDir, "behavior_packs")
+		// Skip if already registered
+		already := false
+		for _, p := range packs {
+			if p["pack_id"] == uuid {
+				already = true
+				break
 			}
 		}
-		break
+		if already {
+			continue
+		}
+		packs = append(packs, map[string]any{"pack_id": uuid, "version": version})
+		raw, _ := json.MarshalIndent(packs, "", "  ")
+		os.WriteFile(cfgPath, raw, 0644)
 	}
-	return filepath.Join(serverDir, "resource_packs")
 }
 
 var reMCPEDLFile = regexp.MustCompile(`(?i)https?://[^\s"'<>]+\.(mcpack|mcaddon|mcworld|mctemplate|zip)`)
