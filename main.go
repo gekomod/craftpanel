@@ -1553,7 +1553,7 @@ system.runInterval(() => {
     const maxHealth = hc ? hc.effectiveMax : 20;
     const ping      = player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0;
     const dim       = player.dimension.id.replace("minecraft:", "");
-    const fc        = player.getComponent("food");
+    const fc        = player.getComponent("minecraft:food");
     const food      = fc ? fc.foodLevel : 20;
     let armor = 0;
     try {
@@ -2047,34 +2047,53 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Source {
 	case "modrinth":
-		// Resolve latest version file URL
-		loaders := `["paper","spigot","bukkit"]`
-		if isBedrock {
-			loaders = `[]`
-		}
-		apiReq, _ := http.NewRequestWithContext(ctx, "GET",
-			req.DownloadURL+"?loaders="+url.QueryEscape(loaders)+"&game_versions=[]", nil)
-		apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
-		if resp, err := http.DefaultClient.Do(apiReq); err == nil && resp.StatusCode == 200 {
+		tryLoaders := func(loaderParam string) string {
+			u := req.DownloadURL + "?loaders=" + url.QueryEscape(loaderParam) + "&game_versions=[]"
+			apiReq, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+			apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
+			resp, err := http.DefaultClient.Do(apiReq)
+			if err != nil || resp.StatusCode != 200 {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				return ""
+			}
+			defer resp.Body.Close()
 			var versions []struct {
 				Files []struct {
-					URL      string `json:"url"`
-					Filename string `json:"filename"`
-					Primary  bool   `json:"primary"`
+					URL     string `json:"url"`
+					Primary bool   `json:"primary"`
 				} `json:"files"`
 			}
-			if json.NewDecoder(resp.Body).Decode(&versions) == nil && len(versions) > 0 {
-				for _, f := range versions[0].Files {
-					if f.Primary {
-						dlURL = f.URL
-						break
-					}
-				}
-				if dlURL == req.DownloadURL && len(versions[0].Files) > 0 {
-					dlURL = versions[0].Files[0].URL
+			if json.NewDecoder(resp.Body).Decode(&versions) != nil || len(versions) == 0 {
+				return ""
+			}
+			for _, f := range versions[0].Files {
+				if f.Primary {
+					return f.URL
 				}
 			}
-			resp.Body.Close()
+			if len(versions[0].Files) > 0 {
+				return versions[0].Files[0].URL
+			}
+			return ""
+		}
+		if isBedrock {
+			if u := tryLoaders(`["vanilla"]`); u != "" {
+				dlURL = u
+			} else if u := tryLoaders(`[]`); u != "" {
+				dlURL = u
+			}
+		} else {
+			if u := tryLoaders(`["paper","spigot","bukkit","folia"]`); u != "" {
+				dlURL = u
+			} else if u := tryLoaders(`[]`); u != "" {
+				dlURL = u
+			}
+		}
+		if dlURL == req.DownloadURL {
+			jsonErr(w, "Nie znaleziono pliku do pobrania na Modrinth dla tej wersji serwera", 404)
+			return
 		}
 
 	case "hangar":
@@ -2144,6 +2163,11 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			jsonErr(w, "Błąd odczytu: "+err.Error(), 500)
+			return
+		}
+		// Validate ZIP magic bytes (PK\x03\x04)
+		if len(data) < 4 || data[0] != 0x50 || data[1] != 0x4B || data[2] != 0x03 || data[3] != 0x04 {
+			jsonErr(w, "Pobrany plik nie jest prawidłowym archiwum ZIP/mcpack", 400)
 			return
 		}
 		installed, err := installBedrockPack(ms.Config.Directory, data, fname)
