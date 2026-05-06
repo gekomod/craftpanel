@@ -200,8 +200,8 @@ function PluginsTab({ serverId, defaultTab }) {
           {results.length === 0 && !searching && (
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-3)', fontSize: 13 }}>
               <I2 name="search" size={28}/><br/><br/>
-              Wyszukaj pluginy z Hangar i Modrinth.<br/>
-              <span style={{ fontSize: 12, color: 'var(--text-4)' }}>Obsługiwane źródła: Hangar (PaperMC), Modrinth</span>
+              Wyszukaj pluginy / dodatki Bedrock.<br/>
+              <span style={{ fontSize: 12, color: 'var(--text-4)' }}>Java: Hangar, Modrinth · Bedrock: Modrinth, MCPEDL</span>
             </div>
           )}
 

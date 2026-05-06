@@ -1523,10 +1523,47 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			resp2.Body.Close()
 		}
 	} else {
-		// Bedrock: MCPEDL via a simple search (limited public API)
+		// Bedrock: search Modrinth for resource packs and behaviour packs
+		mrURL := fmt.Sprintf(`https://api.modrinth.com/v2/search?query=%s&facets=[["loaders:bedrock"]]&limit=16`, url.QueryEscape(q))
+		req2, _ := http.NewRequestWithContext(ctx, "GET", mrURL, nil)
+		req2.Header.Set("User-Agent", "CraftPanel/1.0")
+		resp, err := http.DefaultClient.Do(req2)
+		if err == nil && resp.StatusCode == 200 {
+			var data struct {
+				Hits []struct {
+					ProjectID   string `json:"project_id"`
+					Title       string `json:"title"`
+					Description string `json:"description"`
+					Author      string `json:"author"`
+					Downloads   int    `json:"downloads"`
+					IconURL     string `json:"icon_url"`
+					ProjectType string `json:"project_type"`
+				} `json:"hits"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&data) == nil {
+				for _, p := range data.Hits {
+					slug := p.ProjectType
+					if slug == "" {
+						slug = "mod"
+					}
+					results = append(results, PluginResult{
+						Name: p.Title, Description: p.Description,
+						Author: p.Author, Downloads: p.Downloads,
+						URL:         fmt.Sprintf("https://modrinth.com/%s/%s", slug, p.ProjectID),
+						DownloadURL: fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?loaders=[%%22bedrock%%22]", p.ProjectID),
+						Icon: p.IconURL, Source: "modrinth",
+					})
+				}
+			}
+			resp.Body.Close()
+		}
+		// Always append MCPEDL as a manual-search fallback (no direct download)
 		results = append(results, PluginResult{
-			Name: "Bedrock Add-ons", Description: "Wyszukaj add-ony na MCPEDL.com",
-			URL: "https://mcpedl.com/?s=" + url.QueryEscape(q), Source: "mcpedl",
+			Name:        "Szukaj na MCPEDL",
+			Description: fmt.Sprintf("Przeglądaj dodatki Bedrock dla \"%s\" ręcznie na MCPEDL.com", q),
+			Author:      "MCPEDL",
+			URL:         "https://mcpedl.com/?s=" + url.QueryEscape(q),
+			Source:      "mcpedl",
 		})
 	}
 
