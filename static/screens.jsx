@@ -629,11 +629,8 @@ function ConsoleTab({ serverId }) {
       if (!active) return;
       try {
         const line = JSON.parse(e.data);
-        // SSE delivers lines — keep offset in sync so polling doesn't duplicate
-        setLines(prev => {
-          const next = [...prev.slice(-500), line];
-          return next;
-        });
+        // SSE delivers only new lines; polling handles history + offset tracking
+        setLines(prev => [...prev.slice(-500), line]);
         offsetRef.current += 1;
       } catch {}
     };

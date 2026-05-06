@@ -1358,12 +1358,7 @@ func (a *App) handleConsoleStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
-	for _, line := range ms.RecentLines() {
-		data, _ := json.Marshal(line)
-		fmt.Fprintf(w, "data: %s\n\n", data)
-	}
-	flusher.Flush()
-
+	// Polling handles history — SSE only delivers new lines from here
 	ch := ms.Subscribe()
 	defer ms.Unsubscribe(ch)
 	ticker := time.NewTicker(20 * time.Second)
