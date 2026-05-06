@@ -8,12 +8,27 @@ function HealthBar({ value, max }) {
   const fullHearts  = Math.floor(value / 2);
   const halfHeart   = (value % 2) >= 1 ? 1 : 0;
   const emptyHearts = totalHearts - fullHearts - halfHeart;
-  const color = value / max > 0.6 ? '#f87171' : value / max > 0.3 ? '#fca5a5' : '#fecaca';
+  const pct = value / max;
+  const heartColor = pct > 0.5 ? '#ef4444' : pct > 0.25 ? '#f97316' : '#dc2626';
+  // Two rows of 5 hearts max to stay compact
+  const hearts = [
+    ...Array.from({ length: fullHearts  }, () => ({ type: 'full'  })),
+    ...Array.from({ length: halfHeart   }, () => ({ type: 'half'  })),
+    ...Array.from({ length: emptyHearts }, () => ({ type: 'empty' })),
+  ].slice(0, totalHearts);
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexWrap: 'wrap', maxWidth: 120 }}>
-      {Array.from({ length: fullHearts  }).map((_, i) => <span key={'f'+i} style={{ color: '#ef4444', fontSize: 13, lineHeight: 1 }}>♥</span>)}
-      {halfHeart === 1 &&                                  <span style={{ color, fontSize: 13, lineHeight: 1 }}>♥</span>}
-      {Array.from({ length: emptyHearts }).map((_, i) => <span key={'e'+i} style={{ color: 'var(--text-4)', fontSize: 13, lineHeight: 1 }}>♡</span>)}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      {[0, 1].map(row => (
+        <div key={row} style={{ display: 'flex', gap: 1 }}>
+          {hearts.slice(row * 5, row * 5 + 5).map((h, i) => (
+            <span key={i} style={{ fontSize: 11, lineHeight: 1,
+              color: h.type === 'full' ? heartColor : h.type === 'half' ? '#fca5a5' : 'var(--bg-3)',
+              textShadow: h.type !== 'empty' ? '0 0 1px rgba(0,0,0,0.4)' : 'none' }}>
+              {h.type === 'empty' ? '♡' : '♥'}
+            </span>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
@@ -155,7 +170,7 @@ function PlayersTab({ serverId }) {
                     </div>
                   </Td>
                   <Td><span className="mono" style={{ fontSize: 12 }}>{p.world || '—'}</span></Td>
-                  <Td><span className="mono" style={{ color: p.ping > 100 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping ? `${p.ping}ms` : '—'}</span></Td>
+                  <Td><span className="mono" style={{ color: p.ping > 150 ? '#f87171' : p.ping > 80 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping != null && p.ping >= 0 && p.max_health > 0 ? `${p.ping}ms` : '—'}</span></Td>
                   <Td><HealthBar value={p.health} max={p.max_health}/></Td>
                   <Td><span className="mono" style={{ color: p.online ? 'var(--online)' : 'var(--text-4)' }}>{p.playtime || '—'}</span></Td>
                   <Td align="right">
