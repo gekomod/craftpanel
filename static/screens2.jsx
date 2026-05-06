@@ -682,9 +682,14 @@ function PanelSettingsScreen({ currentUser }) {
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
   const [error, setError]     = useState('');
+  const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
-    fetch('/api/settings').then(r => r.json()).then(d => {
+    fetch('/api/settings').then(r => {
+      if (r.status === 403) { setForbidden(true); return null; }
+      return r.json();
+    }).then(d => {
+      if (!d) return;
       setCfSet(!!d.curseforge_api_key);
       setCfPreview(d.curseforge_api_key_preview || '');
     }).catch(() => {});
@@ -710,7 +715,11 @@ function PanelSettingsScreen({ currentUser }) {
     setSaving(false);
   };
 
-  const isAdmin = currentUser?.role === 'admin';
+  if (forbidden) return (
+    <div style={{ padding: 'var(--pad)', color: 'var(--text-3)', fontSize: 13 }}>
+      Brak uprawnień — ta sekcja jest dostępna tylko dla administratorów.
+    </div>
+  );
 
   return (
     <div style={{ padding: 'var(--pad)', maxWidth: 640 }}>
@@ -742,28 +751,24 @@ function PanelSettingsScreen({ currentUser }) {
           </div>
         )}
 
-        {isAdmin ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              className="input mono"
-              type="password"
-              placeholder={cfSet ? 'Wpisz nowy klucz aby zastąpić…' : '$2a$10$…'}
-              value={cfKey}
-              onChange={e => { setCfKey(e.target.value); setError(''); }}
-              style={{ flex: 1, fontSize: 12 }}
-            />
-            <button className="btn btn-primary" onClick={save} disabled={saving || !cfKey.trim()}>
-              <I2 name={saved ? 'check' : 'save'} size={14}/> {saved ? 'Zapisano!' : saving ? '…' : 'Zapisz'}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input mono"
+            type="password"
+            placeholder={cfSet ? 'Wpisz nowy klucz aby zastąpić…' : '$2a$10$…'}
+            value={cfKey}
+            onChange={e => { setCfKey(e.target.value); setError(''); }}
+            style={{ flex: 1, fontSize: 12 }}
+          />
+          <button className="btn btn-primary" onClick={save} disabled={saving || !cfKey.trim()}>
+            <I2 name={saved ? 'check' : 'save'} size={14}/> {saved ? 'Zapisano!' : saving ? '…' : 'Zapisz'}
+          </button>
+          {cfSet && (
+            <button className="btn btn-danger" onClick={() => { setCfKey(''); fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({curseforge_api_key:''}) }).then(() => { setCfSet(false); setCfPreview(''); }); }} title="Usuń klucz">
+              <I2 name="trash" size={14}/>
             </button>
-            {cfSet && (
-              <button className="btn btn-danger" onClick={() => { setCfKey(''); fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({curseforge_api_key:''}) }).then(() => { setCfSet(false); setCfPreview(''); }); }} title="Usuń klucz">
-                <I2 name="trash" size={14}/>
-              </button>
-            )}
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: 'var(--text-3)' }}>Tylko administrator może zmieniać ustawienia panelu.</div>
-        )}
+          )}
+        </div>
 
         {error && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
       </div>

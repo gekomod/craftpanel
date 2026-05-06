@@ -106,7 +106,7 @@ function Sidebar({ route, navigate, servers, collapsed, setCollapsed, onAddServe
             <span style={{ fontSize: 13 }}>Użytkownicy</span>
           </button>
         )}
-        {!collapsed && currentUser?.role === 'admin' && (
+        {!collapsed && currentUser && (
           <button className={`sidebar-item ${route.screen === 'panel-settings' ? 'sidebar-item--active' : ''}`}
             style={{ marginTop: 2, color: route.screen === 'panel-settings' ? 'var(--accent)' : 'var(--text-3)' }}
             onClick={() => navigate({ screen: 'panel-settings' })}>
