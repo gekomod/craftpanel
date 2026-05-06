@@ -1415,7 +1415,7 @@ func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
   ],
   "dependencies": [
     { "module_name": "@minecraft/server", "version": "1.13.0" },
-    { "module_name": "@minecraft/server-net", "version": "1.0.0" }
+    { "module_name": "@minecraft/server-net", "version": "1.0.0-beta" }
   ]
 }`)
 
