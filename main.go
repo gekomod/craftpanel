@@ -1120,6 +1120,18 @@ func readProcRAM(pid int) int64 {
 	return 0
 }
 
+var reHTML = regexp.MustCompile(`<[^>]+>`)
+
+func stripHTML(s string) string {
+	s = reHTML.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&quot;", `"`)
+	s = strings.ReplaceAll(s, "&#039;", "'")
+	return strings.TrimSpace(s)
+}
+
 func jsonResp(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
@@ -1523,12 +1535,46 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 			resp2.Body.Close()
 		}
 	} else {
-		// Bedrock: search Modrinth for resource packs and behaviour packs
-		mrURL := fmt.Sprintf(`https://api.modrinth.com/v2/search?query=%s&facets=[["loaders:bedrock"]]&limit=16`, url.QueryEscape(q))
-		req2, _ := http.NewRequestWithContext(ctx, "GET", mrURL, nil)
-		req2.Header.Set("User-Agent", "CraftPanel/1.0")
-		resp, err := http.DefaultClient.Do(req2)
-		if err == nil && resp.StatusCode == 200 {
+		// Bedrock: 1) MCPEDL WordPress REST API
+		client2 := &http.Client{Timeout: 10 * time.Second}
+		mcpURL := fmt.Sprintf("https://mcpedl.com/wp-json/wp/v2/posts?search=%s&per_page=10&_embed=1", url.QueryEscape(q))
+		reqMC, _ := http.NewRequestWithContext(ctx, "GET", mcpURL, nil)
+		reqMC.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+		if respMC, err := client2.Do(reqMC); err == nil && respMC.StatusCode == 200 {
+			var posts []struct {
+				Title   struct{ Rendered string `json:"rendered"` } `json:"title"`
+				Excerpt struct{ Rendered string `json:"rendered"` } `json:"excerpt"`
+				Link    string `json:"link"`
+				Embedded struct {
+					Media [][]struct {
+						SourceURL string `json:"source_url"`
+					} `json:"wp:featuredmedia"`
+				} `json:"_embedded"`
+			}
+			if json.NewDecoder(respMC.Body).Decode(&posts) == nil {
+				for _, p := range posts {
+					icon := ""
+					if len(p.Embedded.Media) > 0 && len(p.Embedded.Media[0]) > 0 {
+						icon = p.Embedded.Media[0][0].SourceURL
+					}
+					results = append(results, PluginResult{
+						Name:        stripHTML(p.Title.Rendered),
+						Description: stripHTML(p.Excerpt.Rendered),
+						Author:      "MCPEDL",
+						URL:         p.Link,
+						Icon:        icon,
+						Source:      "mcpedl",
+					})
+				}
+			}
+			respMC.Body.Close()
+		}
+
+		// Bedrock: 2) Modrinth resource packs
+		mrURL := fmt.Sprintf(`https://api.modrinth.com/v2/search?query=%s&facets=[[%%22project_type:resourcepack%%22]]&limit=8`, url.QueryEscape(q))
+		reqMR, _ := http.NewRequestWithContext(ctx, "GET", mrURL, nil)
+		reqMR.Header.Set("User-Agent", "CraftPanel/1.0")
+		if respMR, err := client2.Do(reqMR); err == nil && respMR.StatusCode == 200 {
 			var data struct {
 				Hits []struct {
 					ProjectID   string `json:"project_id"`
@@ -1537,27 +1583,22 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 					Author      string `json:"author"`
 					Downloads   int    `json:"downloads"`
 					IconURL     string `json:"icon_url"`
-					ProjectType string `json:"project_type"`
 				} `json:"hits"`
 			}
-			if json.NewDecoder(resp.Body).Decode(&data) == nil {
+			if json.NewDecoder(respMR.Body).Decode(&data) == nil {
 				for _, p := range data.Hits {
-					slug := p.ProjectType
-					if slug == "" {
-						slug = "mod"
-					}
 					results = append(results, PluginResult{
 						Name: p.Title, Description: p.Description,
 						Author: p.Author, Downloads: p.Downloads,
-						URL:         fmt.Sprintf("https://modrinth.com/%s/%s", slug, p.ProjectID),
-						DownloadURL: fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?loaders=[%%22bedrock%%22]", p.ProjectID),
+						URL:  fmt.Sprintf("https://modrinth.com/resourcepack/%s", p.ProjectID),
 						Icon: p.IconURL, Source: "modrinth",
 					})
 				}
 			}
-			resp.Body.Close()
+			respMR.Body.Close()
 		}
-		// Always append MCPEDL as a manual-search fallback (no direct download)
+
+		// Manual fallback link always at the end
 		results = append(results, PluginResult{
 			Name:        "Szukaj na MCPEDL",
 			Description: fmt.Sprintf("Przeglądaj dodatki Bedrock dla \"%s\" ręcznie na MCPEDL.com", q),
