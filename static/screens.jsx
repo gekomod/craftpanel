@@ -594,18 +594,40 @@ function WorldHeatmap() {
 function ConsoleTab({ serverId }) {
   const [lines, setLines] = useState([]);
   const [input, setInput] = useState('');
+  const [connected, setConnected] = useState(false);
   const ref = useRef(null);
+  const srcRef = useRef(null);
+  const retryRef = useRef(null);
 
   useEffect(() => {
-    const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`, { withCredentials: true });
-    src.onmessage = (e) => {
-      try {
-        const line = JSON.parse(e.data);
-        setLines(prev => [...prev.slice(-200), line]);
-      } catch {}
+    let active = true;
+
+    const connect = () => {
+      if (!active) return;
+      const src = new EventSource(`${API}/api/servers/${serverId}/console/stream`, { withCredentials: true });
+      srcRef.current = src;
+      src.onopen = () => { if (active) setConnected(true); };
+      src.onmessage = (e) => {
+        if (!active) return;
+        try {
+          const line = JSON.parse(e.data);
+          setLines(prev => [...prev.slice(-300), line]);
+        } catch {}
+      };
+      src.onerror = () => {
+        src.close();
+        if (!active) return;
+        setConnected(false);
+        retryRef.current = setTimeout(connect, 3000);
+      };
     };
-    src.onerror = () => src.close();
-    return () => src.close();
+
+    connect();
+    return () => {
+      active = false;
+      clearTimeout(retryRef.current);
+      srcRef.current?.close();
+    };
   }, [serverId]);
 
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
@@ -628,7 +650,9 @@ function ConsoleTab({ serverId }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Icon name="terminal" size={15} color="var(--text-3)"/>
           <span style={{ fontSize: 13, fontWeight: 500 }}>Live Console</span>
-          <span className="chip chip-online">● Streaming</span>
+          <span className={`chip ${connected ? 'chip-online' : 'chip-offline'}`}>
+            {connected ? '● Streaming' : '○ Łączenie...'}
+          </span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <button className="btn btn-sm btn-ghost"><Icon name="search" size={13}/></button>
