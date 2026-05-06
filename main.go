@@ -86,13 +86,17 @@ type Server struct {
 }
 
 type Player struct {
-	Name       string `json:"name"`
-	Identifier string `json:"identifier"` // UUID (Java) or XUID (Bedrock)
-	UUID       string `json:"uuid"`        // alias for identifier, for frontend compat
-	Online     bool   `json:"online"`
-	Op         bool   `json:"op"`
-	JoinedAt   string `json:"joined_at,omitempty"`
-	Playtime   string `json:"playtime,omitempty"`
+	Name       string  `json:"name"`
+	Identifier string  `json:"identifier"` // UUID (Java) or XUID (Bedrock)
+	UUID       string  `json:"uuid"`
+	Online     bool    `json:"online"`
+	Op         bool    `json:"op"`
+	JoinedAt   string  `json:"joined_at,omitempty"`
+	Playtime   string  `json:"playtime,omitempty"`
+	Health     float64 `json:"health,omitempty"`
+	MaxHealth  float64 `json:"max_health,omitempty"`
+	Ping       int     `json:"ping,omitempty"`
+	World      string  `json:"world,omitempty"`
 }
 
 type Plugin struct {
@@ -666,7 +670,15 @@ type ManagedServer struct {
 	currentRAM    int64
 	prevProc      uint64
 	prevTime      time.Time
-	onlinePlayers map[string]string // name → identifier (live tracking from logs)
+	onlinePlayers map[string]string            // name → identifier
+	healthData    map[string]PlayerHealthData  // name → live health
+}
+
+type PlayerHealthData struct {
+	Health    float64 `json:"health"`
+	MaxHealth float64 `json:"max_health"`
+	Ping      int     `json:"ping"`
+	World     string  `json:"world"`
 }
 
 func NewManagedServer(cfg ServerConfig, db *DB) *ManagedServer {
@@ -677,6 +689,7 @@ func NewManagedServer(cfg ServerConfig, db *DB) *ManagedServer {
 		lines:         db.GetLines(cfg.ID, 500),
 		clients:       make(map[chan ConsoleLine]struct{}),
 		onlinePlayers: make(map[string]string),
+		healthData:    make(map[string]PlayerHealthData),
 	}
 }
 
@@ -1330,6 +1343,128 @@ func (a *App) handleCommand(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, map[string]string{"status": "ok"})
 }
 
+// POST /api/servers/{id}/health — receives live player data from Bedrock Script API
+func (a *App) handleHealthUpdate(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "not found", 404)
+		return
+	}
+	var payload []struct {
+		Name      string  `json:"name"`
+		Health    float64 `json:"health"`
+		MaxHealth float64 `json:"max_health"`
+		Ping      int     `json:"ping"`
+		World     string  `json:"world"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		jsonErr(w, "bad request", 400)
+		return
+	}
+	ms.mu.Lock()
+	if ms.healthData == nil {
+		ms.healthData = make(map[string]PlayerHealthData)
+	}
+	for _, p := range payload {
+		ms.healthData[p.Name] = PlayerHealthData{
+			Health:    p.Health,
+			MaxHealth: p.MaxHealth,
+			Ping:      p.Ping,
+			World:     p.World,
+		}
+	}
+	ms.mu.Unlock()
+	w.WriteHeader(204)
+}
+
+// GET /api/servers/{id}/bedrock-healthpack — generates and downloads a .mcpack
+// containing a Script API behavior pack pre-configured with this server's URL.
+func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "not found", 404)
+		return
+	}
+
+	// Derive the CraftPanel base URL from the request so it works on any host/port
+	scheme := "http"
+	host := r.Host
+	if host == "" {
+		host = "localhost" + a.config.Listen
+	}
+	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	healthURL := fmt.Sprintf("%s/api/servers/%s/health", baseURL, ms.Config.ID)
+
+	manifest := fmt.Sprintf(`{
+  "format_version": 2,
+  "header": {
+    "name": "CraftPanel Health Monitor",
+    "description": "Sends player health/ping/world data to CraftPanel dashboard",
+    "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "version": [1, 0, 0],
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "1.13.0" },
+    { "module_name": "@minecraft/server-net", "version": "1.0.0" }
+  ]
+}`)
+
+	script := fmt.Sprintf(`import { world, system } from "@minecraft/server";
+import { HttpClient, HttpRequest, HttpRequestMethod, HttpHeader } from "@minecraft/server-net";
+
+const HEALTH_URL = "%s";
+
+system.runInterval(() => {
+  const data = [];
+  for (const player of world.getAllPlayers()) {
+    const hc = player.getComponent("health");
+    data.push({
+      name: player.name,
+      health: hc ? hc.currentValue : 20,
+      max_health: hc ? hc.effectiveMax : 20,
+      ping: player.clientSystemInfo ? player.clientSystemInfo.pingMs : 0,
+      world: player.dimension.id.replace("minecraft:", "")
+    });
+  }
+  if (data.length === 0) return;
+  const req = new HttpRequest(HEALTH_URL);
+  req.method = HttpRequestMethod.Post;
+  req.body = JSON.stringify(data);
+  req.headers = [new HttpHeader("Content-Type", "application/json")];
+  HttpClient.request(req).catch(() => {});
+}, 40); // every 2 seconds (40 ticks)
+`, healthURL)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range map[string]string{
+		"manifest.json":  manifest,
+		"scripts/main.js": script,
+	} {
+		f, err := zw.Create(name)
+		if err != nil {
+			continue
+		}
+		f.Write([]byte(content))
+	}
+	zw.Close()
+
+	fname := fmt.Sprintf("craftpanel-health-%s.mcpack", ms.Config.ID)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fname))
+	w.Write(buf.Bytes())
+}
+
 func (a *App) handleConsoleLines(w http.ResponseWriter, r *http.Request) {
 	ms, ok := a.get(r.PathValue("id"))
 	if !ok {
@@ -1450,6 +1585,12 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 			if t, err := time.Parse(time.RFC3339, players[i].JoinedAt); err == nil {
 				players[i].Playtime = formatDuration(now.Sub(t))
 			}
+		}
+		if hd, ok := ms.healthData[players[i].Name]; ok {
+			players[i].Health = hd.Health
+			players[i].MaxHealth = hd.MaxHealth
+			players[i].Ping = hd.Ping
+			players[i].World = hd.World
 		}
 	}
 
@@ -2971,6 +3112,8 @@ func main() {
 	mux.HandleFunc("POST /api/servers/{id}/command", app.authMW(app.handleCommand))
 	mux.HandleFunc("GET /api/servers/{id}/console/stream", app.authMW(app.handleConsoleStream))
 	mux.HandleFunc("GET /api/servers/{id}/console/lines", app.authMW(app.handleConsoleLines))
+	mux.HandleFunc("POST /api/servers/{id}/health", app.handleHealthUpdate)        // no auth — called by Script API
+	mux.HandleFunc("GET /api/servers/{id}/bedrock-healthpack", app.authMW(app.handleBedrockHealthPack))
 	mux.HandleFunc("GET /api/servers/{id}/players", app.authMW(app.handlePlayers))
 	mux.HandleFunc("GET /api/servers/{id}/plugins", app.authMW(app.handlePlugins))
 	mux.HandleFunc("GET /api/servers/{id}/plugins/search", app.authMW(app.handlePluginSearch))

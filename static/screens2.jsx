@@ -2,9 +2,24 @@
 const { useState, useEffect, useCallback, useRef } = React;
 const { Icon: I2, Avatar: Av, MCHearts: H } = window.CraftUI;
 
+function HealthBar({ value, max }) {
+  if (!value || !max) return <span style={{ color: 'var(--text-4)', fontSize: 12 }}>—</span>;
+  const pct = Math.max(0, Math.min(100, (value / max) * 100));
+  const color = pct > 60 ? '#4ade80' : pct > 30 ? '#fbbf24' : '#f87171';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ width: 60, height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 3, transition: 'width 0.4s' }}/>
+      </div>
+      <span style={{ fontSize: 11, color: 'var(--text-3)', minWidth: 28 }}>{Math.round(value)}/{Math.round(max)}</span>
+    </div>
+  );
+}
+
 function PlayersTab({ serverId }) {
   const [players, setPlayers] = useState([]);
   const [filter, setFilter] = useState('all');
+  const hasHealth = players.some(p => p.health > 0);
 
   const load = () => {
     fetch(`${API}/api/servers/${serverId}/players`)
@@ -15,7 +30,7 @@ function PlayersTab({ serverId }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 3000);
     return () => clearInterval(t);
   }, [serverId]);
 
@@ -25,6 +40,24 @@ function PlayersTab({ serverId }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)', padding: 'var(--pad)' }}>
+
+      {/* Health pack banner — shown when health data not yet received */}
+      {!hasHealth && (
+        <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.2)' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-1)' }}>Monitorowanie zdrowia gracza (Bedrock)</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+              Pobierz i zainstaluj behavior pack, aby widzieć health, ping i świat w czasie rzeczywistym.
+              Wymagane: <code style={{ fontSize: 11 }}>allow-outbound-script-debug-access=true</code> w server.properties
+            </div>
+          </div>
+          <a href={`${API}/api/servers/${serverId}/bedrock-healthpack`}
+             className="btn btn-sm btn-primary" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }}>
+            <I2 name="download" size={13}/> Pobierz pack
+          </a>
+        </div>
+      )}
+
       <div className="card" style={{ overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
@@ -34,7 +67,7 @@ function PlayersTab({ serverId }) {
             </h3>
             <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
               {online.filter(p => p.op).length > 0 && `${online.filter(p => p.op).length} OPs · `}
-              Odświeżanie co 5s
+              Odświeżanie co 3s {hasHealth && '· ❤ Live health'}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
@@ -52,8 +85,11 @@ function PlayersTab({ serverId }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: 'var(--bg-1)' }}>
-                <Th>Gracz</Th><Th>Status</Th><Th>UUID / XUID</Th>
-                <Th>Dołączył</Th><Th>Czas sesji</Th><Th align="right">Akcje</Th>
+                <Th>Gracz</Th><Th>Status</Th>
+                {hasHealth && <Th>Świat</Th>}
+                {hasHealth && <Th>Ping</Th>}
+                {hasHealth && <Th>Health</Th>}
+                <Th>Czas sesji</Th><Th align="right">Akcje</Th>
               </tr>
             </thead>
             <tbody>
@@ -64,17 +100,21 @@ function PlayersTab({ serverId }) {
                       <Av name={p.name} size={32}/>
                       <div>
                         <div style={{ fontWeight: 500 }}>{p.name}</div>
-                        {p.op && <span style={{ fontSize: 10, background: 'rgba(248,113,113,0.15)', color: '#fca5a5', padding: '1px 5px', borderRadius: 4 }}>OP</span>}
+                        <div style={{ fontSize: 11, color: 'var(--text-4)', fontFamily: 'monospace' }}>{p.identifier || ''}</div>
                       </div>
                     </div>
                   </Td>
                   <Td>
-                    <span className={`chip ${p.online ? 'chip-online' : 'chip-offline'}`}>
-                      {p.online ? '● Online' : '○ Offline'}
-                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <span className={`chip ${p.online ? 'chip-online' : 'chip-offline'}`}>
+                        {p.online ? '● Online' : '○ Offline'}
+                      </span>
+                      {p.op && <span style={{ fontSize: 10, background: 'rgba(248,113,113,0.15)', color: '#fca5a5', padding: '1px 5px', borderRadius: 4, display:'inline-block' }}>OP</span>}
+                    </div>
                   </Td>
-                  <Td><span className="mono" style={{ fontSize: 11, color: 'var(--text-4)' }}>{p.identifier || '—'}</span></Td>
-                  <Td><span style={{ fontSize: 12 }}>{p.joined_at ? new Date(p.joined_at).toLocaleString('pl-PL', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '—'}</span></Td>
+                  {hasHealth && <Td><span className="mono" style={{ fontSize: 12 }}>{p.world || '—'}</span></Td>}
+                  {hasHealth && <Td><span className="mono" style={{ color: p.ping > 100 ? '#fbbf24' : 'var(--text-2)' }}>{p.ping ? `${p.ping}ms` : '—'}</span></Td>}
+                  {hasHealth && <Td><HealthBar value={p.health} max={p.max_health}/></Td>}
                   <Td><span className="mono" style={{ color: p.online ? 'var(--online)' : 'var(--text-4)' }}>{p.playtime || '—'}</span></Td>
                   <Td align="right">
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
