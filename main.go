@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"compress/gzip"
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"database/sql"
@@ -1701,18 +1702,6 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		dlURL = scraped
 	}
 
-	// Determine destination directory
-	var destDir string
-	if isBedrock {
-		destDir = filepath.Join(ms.Config.Directory, "resource_packs")
-	} else {
-		destDir = filepath.Join(ms.Config.Directory, "plugins")
-	}
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		jsonErr(w, err.Error(), 500)
-		return
-	}
-
 	// Download the file
 	dlReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
 	dlReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
@@ -1728,7 +1717,7 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Derive filename from URL or use plugin name
-	fname := path.Base(dlURL)
+	fname := path.Base(strings.Split(dlURL, "?")[0])
 	if fname == "" || fname == "." || !strings.Contains(fname, ".") {
 		if isBedrock {
 			fname = req.Name + ".mcpack"
@@ -1736,8 +1725,29 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 			fname = req.Name + ".jar"
 		}
 	}
-	dest := filepath.Join(destDir, fname)
-	f, err := os.Create(dest)
+
+	if isBedrock {
+		// Read into memory so we can inspect the manifest
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			jsonErr(w, "Błąd odczytu: "+err.Error(), 500)
+			return
+		}
+		installed, err := installBedrockPack(ms.Config.Directory, data, fname)
+		if err != nil {
+			jsonErr(w, "Błąd instalacji: "+err.Error(), 500)
+			return
+		}
+		jsonResp(w, map[string]string{"status": "ok", "file": installed})
+		return
+	}
+
+	destDir := filepath.Join(ms.Config.Directory, "plugins")
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+	f, err := os.Create(filepath.Join(destDir, fname))
 	if err != nil {
 		jsonErr(w, err.Error(), 500)
 		return
@@ -1745,6 +1755,83 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	io.Copy(f, resp.Body)
 	jsonResp(w, map[string]string{"status": "ok", "file": fname})
+}
+
+// installBedrockPack installs a .mcpack/.mcaddon/.zip to the correct Bedrock directory
+// by reading manifest.json inside to detect resource vs behavior pack.
+func installBedrockPack(serverDir string, data []byte, fname string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(fname))
+	if ext == ".mcaddon" {
+		// mcaddon is a zip of mcpack files — extract and install each one
+		return installMcAddon(serverDir, data)
+	}
+	// Single pack: detect type from manifest and install
+	destDir := bedrockPackDir(serverDir, data)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(destDir, fname)
+	return fname, os.WriteFile(dest, data, 0644)
+}
+
+// installMcAddon extracts inner .mcpack files from a .mcaddon bundle
+func installMcAddon(serverDir string, data []byte) (string, error) {
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	var installed []string
+	for _, f := range r.File {
+		if !strings.HasSuffix(strings.ToLower(f.Name), ".mcpack") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		packData, _ := io.ReadAll(rc)
+		rc.Close()
+		destDir := bedrockPackDir(serverDir, packData)
+		os.MkdirAll(destDir, 0755)
+		packName := path.Base(f.Name)
+		os.WriteFile(filepath.Join(destDir, packName), packData, 0644)
+		installed = append(installed, packName)
+	}
+	if len(installed) == 0 {
+		return "", fmt.Errorf("brak plików .mcpack wewnątrz archiwum")
+	}
+	return strings.Join(installed, ", "), nil
+}
+
+// bedrockPackDir returns resource_packs or behavior_packs based on manifest.json content
+func bedrockPackDir(serverDir string, data []byte) string {
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return filepath.Join(serverDir, "resource_packs")
+	}
+	for _, f := range r.File {
+		if f.Name != "manifest.json" && !strings.HasSuffix(f.Name, "/manifest.json") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			break
+		}
+		var manifest struct {
+			Modules []struct {
+				Type string `json:"type"`
+			} `json:"modules"`
+		}
+		json.NewDecoder(rc).Decode(&manifest)
+		rc.Close()
+		for _, m := range manifest.Modules {
+			if m.Type == "data" || m.Type == "script" || m.Type == "javascript" {
+				return filepath.Join(serverDir, "behavior_packs")
+			}
+		}
+		break
+	}
+	return filepath.Join(serverDir, "resource_packs")
 }
 
 var reMCPEDLFile = regexp.MustCompile(`(?i)https?://[^\s"'<>]+\.(mcpack|mcaddon|mcworld|mctemplate|zip)`)
