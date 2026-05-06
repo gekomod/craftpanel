@@ -1420,7 +1420,7 @@ func (a *App) handleBedrockHealthPack(w http.ResponseWriter, r *http.Request) {
 }`)
 
 	script := fmt.Sprintf(`import { world, system } from "@minecraft/server";
-import { HttpClient, HttpRequest, HttpRequestMethod, HttpHeader } from "@minecraft/server-net";
+import { http, HttpRequest, HttpRequestMethod, HttpHeader } from "@minecraft/server-net";
 
 const HEALTH_URL = "%s";
 
@@ -1440,8 +1440,8 @@ system.runInterval(() => {
   const req = new HttpRequest(HEALTH_URL);
   req.method = HttpRequestMethod.Post;
   req.body = JSON.stringify(data);
-  req.headers = [new HttpHeader("Content-Type", "application/json")];
-  HttpClient.request(req).catch(() => {});
+  req.addHeader("Content-Type", "application/json");
+  http.request(req);
 }, 40); // every 2 seconds (40 ticks)
 `, healthURL)
 
