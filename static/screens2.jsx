@@ -122,6 +122,7 @@ function PluginsTab({ serverId, defaultTab }) {
 
   const sourceColor = { hangar: '#4ade80', modrinth: '#5da65b', mcpedl: '#60a5fa' };
   const sourceName  = { hangar: 'Hangar', modrinth: 'Modrinth', mcpedl: 'MCPEDL' };
+  const isMCPEDLFallback = (p) => p.source === 'mcpedl' && p.url && p.url.includes('?s=');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
@@ -236,11 +237,11 @@ function PluginsTab({ serverId, defaultTab }) {
                 )}
                 <div style={{ display: 'flex', gap: 6 }}>
                   {p.url && (
-                    <a href={p.url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{ flex: 1, justifyContent: 'center', textDecoration: 'none' }}>
-                      <I2 name="globe" size={12}/> Strona
+                    <a href={p.url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{ flex: isMCPEDLFallback(p) ? '1' : undefined, justifyContent: 'center', textDecoration: 'none' }}>
+                      <I2 name="globe" size={12}/> {isMCPEDLFallback(p) ? 'Otwórz MCPEDL' : 'Strona'}
                     </a>
                   )}
-                  {p.download_url && (
+                  {p.download_url && !isMCPEDLFallback(p) && (
                     <button className="btn btn-sm btn-primary" style={{ flex: 1, justifyContent: 'center' }}
                       disabled={installing === p.name}
                       onClick={() => install(p)}>

@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -1562,6 +1563,7 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 						Description: stripHTML(p.Excerpt.Rendered),
 						Author:      "MCPEDL",
 						URL:         p.Link,
+						DownloadURL: p.Link, // backend will scrape actual file link on install
 						Icon:        icon,
 						Source:      "mcpedl",
 					})
@@ -1590,7 +1592,8 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 					results = append(results, PluginResult{
 						Name: p.Title, Description: p.Description,
 						Author: p.Author, Downloads: p.Downloads,
-						URL:  fmt.Sprintf("https://modrinth.com/resourcepack/%s", p.ProjectID),
+						URL:         fmt.Sprintf("https://modrinth.com/resourcepack/%s", p.ProjectID),
+						DownloadURL: fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", p.ProjectID),
 						Icon: p.IconURL, Source: "modrinth",
 					})
 				}
@@ -1614,7 +1617,7 @@ func (a *App) handlePluginSearch(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, results)
 }
 
-// handlePluginInstall downloads a plugin jar into the server's plugins/ directory
+// handlePluginInstall downloads a plugin/pack into the server directory
 func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	ms, ok := a.get(r.PathValue("id"))
 	if !ok {
@@ -1625,7 +1628,6 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		DownloadURL string `json:"download_url"`
 		Source      string `json:"source"`
-		ProjectID   string `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, err.Error(), 400)
@@ -1636,22 +1638,27 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pluginsDir := filepath.Join(ms.Config.Directory, "plugins")
-	if err := os.MkdirAll(pluginsDir, 0755); err != nil {
-		jsonErr(w, err.Error(), 500)
-		return
-	}
-
-	// For Modrinth, resolve latest version download URL first
+	isBedrock := ms.Config.IsBedrock()
+	ctx := r.Context()
 	dlURL := req.DownloadURL
-	if req.Source == "modrinth" {
-		ctx := r.Context()
-		apiReq, _ := http.NewRequestWithContext(ctx, "GET", req.DownloadURL+"?loaders=[\"paper\",\"spigot\",\"bukkit\"]&game_versions=[]", nil)
+
+	switch req.Source {
+	case "modrinth":
+		// Resolve latest version file URL
+		loaders := `["paper","spigot","bukkit"]`
+		if isBedrock {
+			loaders = `[]`
+		}
+		apiReq, _ := http.NewRequestWithContext(ctx, "GET",
+			req.DownloadURL+"?loaders="+url.QueryEscape(loaders)+"&game_versions=[]", nil)
 		apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
-		resp, err := http.DefaultClient.Do(apiReq)
-		if err == nil && resp.StatusCode == 200 {
+		if resp, err := http.DefaultClient.Do(apiReq); err == nil && resp.StatusCode == 200 {
 			var versions []struct {
-				Files []struct{ URL string; Primary bool } `json:"files"`
+				Files []struct {
+					URL      string `json:"url"`
+					Filename string `json:"filename"`
+					Primary  bool   `json:"primary"`
+				} `json:"files"`
 			}
 			if json.NewDecoder(resp.Body).Decode(&versions) == nil && len(versions) > 0 {
 				for _, f := range versions[0].Files {
@@ -1666,36 +1673,70 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 			}
 			resp.Body.Close()
 		}
-	}
 
-	// For Hangar, resolve the actual jar download
-	if req.Source == "hangar" {
-		ctx := r.Context()
+	case "hangar":
 		apiReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
 		apiReq.Header.Set("User-Agent", "CraftPanel/1.0")
-		resp, err := http.DefaultClient.Do(apiReq)
-		if err == nil {
-			var ver struct{ Downloads struct{ PAPER struct{ DownloadURL string `json:"downloadUrl"` } } `json:"downloads"` }
+		if resp, err := http.DefaultClient.Do(apiReq); err == nil {
+			var ver struct {
+				Downloads struct {
+					PAPER struct {
+						DownloadURL string `json:"downloadUrl"`
+					}
+				} `json:"downloads"`
+			}
 			if json.NewDecoder(resp.Body).Decode(&ver) == nil && ver.Downloads.PAPER.DownloadURL != "" {
 				dlURL = ver.Downloads.PAPER.DownloadURL
 			}
 			resp.Body.Close()
 		}
+
+	case "mcpedl":
+		// Scrape the MCPEDL post page for a direct file link
+		scraped, err := scrapeMCPEDLDownload(ctx, req.DownloadURL)
+		if err != nil || scraped == "" {
+			jsonErr(w, "Nie można znaleźć linku do pobrania na stronie MCPEDL. Pobierz ręcznie.", 400)
+			return
+		}
+		dlURL = scraped
 	}
 
-	resp, err := http.Get(dlURL)
+	// Determine destination directory
+	var destDir string
+	if isBedrock {
+		destDir = filepath.Join(ms.Config.Directory, "resource_packs")
+	} else {
+		destDir = filepath.Join(ms.Config.Directory, "plugins")
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		jsonErr(w, err.Error(), 500)
+		return
+	}
+
+	// Download the file
+	dlReq, _ := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
+	dlReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+	resp, err := http.DefaultClient.Do(dlReq)
 	if err != nil {
-		jsonErr(w, "download failed: "+err.Error(), 500)
+		jsonErr(w, "Pobieranie nieudane: "+err.Error(), 500)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		jsonErr(w, fmt.Sprintf("download failed: HTTP %d", resp.StatusCode), 500)
+		jsonErr(w, fmt.Sprintf("Pobieranie nieudane: HTTP %d", resp.StatusCode), 500)
 		return
 	}
 
-	fname := req.Name + ".jar"
-	dest := filepath.Join(pluginsDir, fname)
+	// Derive filename from URL or use plugin name
+	fname := path.Base(dlURL)
+	if fname == "" || fname == "." || !strings.Contains(fname, ".") {
+		if isBedrock {
+			fname = req.Name + ".mcpack"
+		} else {
+			fname = req.Name + ".jar"
+		}
+	}
+	dest := filepath.Join(destDir, fname)
 	f, err := os.Create(dest)
 	if err != nil {
 		jsonErr(w, err.Error(), 500)
@@ -1704,6 +1745,30 @@ func (a *App) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 	io.Copy(f, resp.Body)
 	jsonResp(w, map[string]string{"status": "ok", "file": fname})
+}
+
+var reMCPEDLFile = regexp.MustCompile(`(?i)https?://[^\s"'<>]+\.(mcpack|mcaddon|mcworld|mctemplate|zip)`)
+var reMCPEDLRedir = regexp.MustCompile(`https://mcpedl\.com/r/[^\s"'<>]+`)
+
+func scrapeMCPEDLDownload(ctx context.Context, pageURL string) (string, error) {
+	client := &http.Client{Timeout: 12 * time.Second}
+	req, _ := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.9")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if m := reMCPEDLFile.FindString(s); m != "" {
+		return m, nil
+	}
+	if m := reMCPEDLRedir.FindString(s); m != "" {
+		return m, nil
+	}
+	return "", nil
 }
 
 func (a *App) handleFiles(w http.ResponseWriter, r *http.Request) {
