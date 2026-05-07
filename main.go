@@ -1237,6 +1237,89 @@ var experimentsToEnable = []string{
 	"beta_apis", // beta Script API (@minecraft/server 2.x-beta etc.)
 }
 
+// nbtSkipPayload advances pos past the payload of a little-endian NBT tag.
+func nbtSkipPayload(data []byte, pos, tagID int) int {
+	switch tagID {
+	case 1: // TAG_Byte
+		return pos + 1
+	case 2: // TAG_Short
+		return pos + 2
+	case 3: // TAG_Int
+		return pos + 4
+	case 4: // TAG_Long
+		return pos + 8
+	case 5: // TAG_Float
+		return pos + 4
+	case 6: // TAG_Double
+		return pos + 8
+	case 7: // TAG_ByteArray
+		if pos+4 > len(data) {
+			return -1
+		}
+		return pos + 4 + int(binary.LittleEndian.Uint32(data[pos:]))
+	case 8: // TAG_String
+		if pos+2 > len(data) {
+			return -1
+		}
+		slen := int(data[pos]) | int(data[pos+1])<<8
+		return pos + 2 + slen
+	case 9: // TAG_List
+		if pos+5 > len(data) {
+			return -1
+		}
+		elemType := int(data[pos])
+		count := int(binary.LittleEndian.Uint32(data[pos+1:]))
+		pos += 5
+		for i := 0; i < count; i++ {
+			pos = nbtSkipPayload(data, pos, elemType)
+			if pos < 0 {
+				return -1
+			}
+		}
+		return pos
+	case 10: // TAG_Compound — recurse
+		end := nbtFindCompoundEnd(data, pos)
+		if end < 0 {
+			return -1
+		}
+		return end + 1 // +1 to step past the TAG_End byte
+	case 11: // TAG_IntArray
+		if pos+4 > len(data) {
+			return -1
+		}
+		return pos + 4 + int(binary.LittleEndian.Uint32(data[pos:]))*4
+	case 12: // TAG_LongArray
+		if pos+4 > len(data) {
+			return -1
+		}
+		return pos + 4 + int(binary.LittleEndian.Uint32(data[pos:]))*8
+	}
+	return -1
+}
+
+// nbtFindCompoundEnd returns the absolute offset of the TAG_End (0x00) byte
+// that closes the compound whose children start at data[start:].
+func nbtFindCompoundEnd(data []byte, start int) int {
+	pos := start
+	for pos < len(data) {
+		tagID := int(data[pos])
+		if tagID == 0 { // TAG_End
+			return pos
+		}
+		pos++ // past tag id
+		if pos+2 > len(data) {
+			return -1
+		}
+		nameLen := int(data[pos]) | int(data[pos+1])<<8
+		pos += 2 + nameLen // past name length + name
+		pos = nbtSkipPayload(data, pos, tagID)
+		if pos < 0 {
+			return -1
+		}
+	}
+	return -1
+}
+
 func enableBedrockExperiments(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1247,7 +1330,7 @@ func enableBedrockExperiments(path string) error {
 	}
 	nbt := data[8:] // skip 4-byte version + 4-byte length header
 
-	// nbtByteTag serialises a single TAG_Byte (id=1) entry in little-endian NBT.
+	// nbtByteTag serialises a TAG_Byte (id=1) entry in little-endian NBT.
 	nbtByteTag := func(name string, val byte) []byte {
 		n := []byte(name)
 		out := []byte{0x01, byte(len(n)), byte(len(n) >> 8)}
@@ -1255,37 +1338,33 @@ func enableBedrockExperiments(path string) error {
 		return append(out, val)
 	}
 
-	// ensureFlag sets or inserts name=1 inside the experiments compound that starts
-	// at nbt[innerStart:].  Returns the (possibly re-allocated) nbt slice.
-	ensureFlag := func(nbt []byte, innerStart int, name string) []byte {
-		tag := append([]byte{0x01, byte(len(name)), 0x00}, []byte(name)...)
-		inner := nbt[innerStart:]
-		endIdx := bytes.IndexByte(inner, 0x00) // TAG_End of experiments compound
-		if endIdx < 0 {
-			return nbt
-		}
-		gi := bytes.Index(inner[:endIdx], tag)
-		if gi >= 0 {
-			// Tag exists — make sure value is 1
-			nbt[innerStart+gi+len(tag)] = 1
-			return nbt
-		}
-		// Insert new tag just before TAG_End
-		entry := nbtByteTag(name, 1)
-		absEnd := innerStart + bytes.IndexByte(nbt[innerStart:], 0x00)
-		return append(nbt[:absEnd], append(entry, nbt[absEnd:]...)...)
-	}
-
 	expName := []byte("experiments")
 	marker := append([]byte{0x0A, byte(len(expName)), 0x00}, expName...)
 	expIdx := bytes.Index(nbt, marker)
 
 	if expIdx >= 0 {
-		innerStart := expIdx + len(marker)
 		for _, flag := range experimentsToEnable {
-			nbt = ensureFlag(nbt, innerStart, flag)
-			// Recalculate innerStart after possible re-allocation
-			innerStart = bytes.Index(nbt, marker) + len(marker)
+			// Re-find marker each iteration (slice may have been reallocated)
+			expIdx = bytes.Index(nbt, marker)
+			if expIdx < 0 {
+				break
+			}
+			innerStart := expIdx + len(marker)
+			endOff := nbtFindCompoundEnd(nbt, innerStart)
+			if endOff < 0 {
+				break
+			}
+			// Search for the flag's full tag header within the compound body
+			tag := append([]byte{0x01, byte(len(flag)), 0x00}, []byte(flag)...)
+			gi := bytes.Index(nbt[innerStart:endOff], tag)
+			if gi >= 0 {
+				// Exists — overwrite value byte
+				nbt[innerStart+gi+len(tag)] = 1
+			} else {
+				// Insert new byte-tag just before TAG_End
+				entry := nbtByteTag(flag, 1)
+				nbt = append(nbt[:endOff], append(entry, nbt[endOff:]...)...)
+			}
 		}
 	} else {
 		// No experiments compound — build one from scratch before root TAG_End
