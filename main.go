@@ -2498,59 +2498,111 @@ func readLangName(r *zip.Reader, prefix, key string) string {
 // syncInstalledPacksToWorld registers all packs found in resource_packs/ and behavior_packs/
 // into the given world directory's pack JSON files.
 func syncInstalledPacksToWorld(serverDir, worldDir string) {
-	for _, packDir := range []struct {
-		dir        string
+	for _, cfg := range []struct {
+		packDir    string
 		configName string
-		isBehavior bool
 	}{
-		{"resource_packs", "world_resource_packs.json", false},
-		{"behavior_packs", "world_behavior_packs.json", true},
+		{"resource_packs", "world_resource_packs.json"},
+		{"behavior_packs", "world_behavior_packs.json"},
 	} {
-		packsRoot := filepath.Join(serverDir, packDir.dir)
-		entries, err := os.ReadDir(packsRoot)
+		packsRoot := filepath.Join(serverDir, cfg.packDir)
+
+		// Collect all pack UUIDs + versions by walking each top-level pack dir
+		// and finding the first manifest.json (may be at root or one level deep)
+		type packEntry struct {
+			UUID    string
+			Version []int
+		}
+		var found []packEntry
+
+		topEntries, err := os.ReadDir(packsRoot)
 		if err != nil {
+			continue // directory doesn't exist yet
+		}
+		for _, e := range topEntries {
+			if !e.IsDir() {
+				continue
+			}
+			packRoot := filepath.Join(packsRoot, e.Name())
+			// Try manifest.json directly in the pack folder first
+			var manifest bedrockManifest
+			located := false
+			for _, candidate := range []string{
+				filepath.Join(packRoot, "manifest.json"),
+			} {
+				raw, err := os.ReadFile(candidate)
+				if err != nil {
+					continue
+				}
+				if json.Unmarshal(raw, &manifest) == nil && manifest.Header.UUID != "" {
+					located = true
+					break
+				}
+			}
+			// Fall back: walk one level deeper
+			if !located {
+				subEntries, _ := os.ReadDir(packRoot)
+				for _, sub := range subEntries {
+					if !sub.IsDir() {
+						continue
+					}
+					raw, err := os.ReadFile(filepath.Join(packRoot, sub.Name(), "manifest.json"))
+					if err != nil {
+						continue
+					}
+					if json.Unmarshal(raw, &manifest) == nil && manifest.Header.UUID != "" {
+						located = true
+						break
+					}
+				}
+			}
+			if !located {
+				log.Printf("syncPacks: no manifest in %s, skipping", packRoot)
+				continue
+			}
+			ver := manifest.Header.Version
+			if len(ver) == 0 {
+				ver = []int{1, 0, 0}
+			}
+			found = append(found, packEntry{UUID: manifest.Header.UUID, Version: ver})
+		}
+
+		if len(found) == 0 {
 			continue
 		}
-		cfgPath := filepath.Join(worldDir, packDir.configName)
+
+		// Read existing world pack list
+		cfgPath := filepath.Join(worldDir, cfg.configName)
 		var list []map[string]any
 		if raw, err := os.ReadFile(cfgPath); err == nil {
 			json.Unmarshal(raw, &list)
 		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			mPath := filepath.Join(packsRoot, e.Name(), "manifest.json")
-			raw, err := os.ReadFile(mPath)
-			if err != nil {
-				continue
-			}
-			var m bedrockManifest
-			if json.Unmarshal(raw, &m) != nil || m.Header.UUID == "" {
-				continue
-			}
-			// Skip if already in the list
+
+		// Add any packs not already registered
+		added := 0
+		for _, p := range found {
 			already := false
-			for _, p := range list {
-				if p["pack_id"] == m.Header.UUID {
+			for _, existing := range list {
+				if fmt.Sprint(existing["pack_id"]) == p.UUID {
 					already = true
 					break
 				}
 			}
-			if already {
-				continue
+			if !already {
+				list = append(list, map[string]any{"pack_id": p.UUID, "version": p.Version})
+				added++
 			}
-			ver := m.Header.Version
-			if len(ver) == 0 {
-				ver = []int{1, 0, 0}
-			}
-			list = append(list, map[string]any{"pack_id": m.Header.UUID, "version": ver})
 		}
-		if len(list) == 0 {
+
+		if added == 0 {
 			continue
 		}
 		raw, _ := json.MarshalIndent(list, "", "  ")
-		os.WriteFile(cfgPath, raw, 0644)
+		if err := os.WriteFile(cfgPath, raw, 0644); err != nil {
+			log.Printf("syncPacks: write %s: %v", cfgPath, err)
+		} else {
+			log.Printf("syncPacks: registered %d pack(s) in %s", added, cfgPath)
+		}
 	}
 }
 
