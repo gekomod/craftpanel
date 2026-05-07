@@ -2307,6 +2307,118 @@ func readBedrockManifest(data []byte) (bedrockManifest, string) {
 	return bedrockManifest{}, prefix
 }
 
+// isLocKey returns true when s looks like a Bedrock localization key (e.g. "pack.name")
+// rather than a real display name.
+func isLocKey(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t") {
+		return false
+	}
+	if !strings.Contains(s, ".") {
+		return false
+	}
+	// All-lowercase-or-digits segments separated by dots → localization key
+	for _, ch := range s {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// readLangName searches the zip for an English .lang file and resolves a localization key.
+func readLangName(r *zip.Reader, prefix, key string) string {
+	candidates := []string{
+		prefix + "texts/en_US.lang",
+		prefix + "texts/en_GB.lang",
+		prefix + "texts/en_UK.lang",
+	}
+	pat := []byte(key + "=")
+	for _, f := range r.File {
+		found := false
+		for _, c := range candidates {
+			if f.Name == c {
+				found = true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		content, _ := io.ReadAll(rc)
+		rc.Close()
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, string(pat)) {
+				return strings.TrimSpace(line[len(pat):])
+			}
+		}
+	}
+	return ""
+}
+
+// syncInstalledPacksToWorld registers all packs found in resource_packs/ and behavior_packs/
+// into the given world directory's pack JSON files.
+func syncInstalledPacksToWorld(serverDir, worldDir string) {
+	for _, packDir := range []struct {
+		dir        string
+		configName string
+		isBehavior bool
+	}{
+		{"resource_packs", "world_resource_packs.json", false},
+		{"behavior_packs", "world_behavior_packs.json", true},
+	} {
+		packsRoot := filepath.Join(serverDir, packDir.dir)
+		entries, err := os.ReadDir(packsRoot)
+		if err != nil {
+			continue
+		}
+		cfgPath := filepath.Join(worldDir, packDir.configName)
+		var list []map[string]any
+		if raw, err := os.ReadFile(cfgPath); err == nil {
+			json.Unmarshal(raw, &list)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			mPath := filepath.Join(packsRoot, e.Name(), "manifest.json")
+			raw, err := os.ReadFile(mPath)
+			if err != nil {
+				continue
+			}
+			var m bedrockManifest
+			if json.Unmarshal(raw, &m) != nil || m.Header.UUID == "" {
+				continue
+			}
+			// Skip if already in the list
+			already := false
+			for _, p := range list {
+				if p["pack_id"] == m.Header.UUID {
+					already = true
+					break
+				}
+			}
+			if already {
+				continue
+			}
+			ver := m.Header.Version
+			if len(ver) == 0 {
+				ver = []int{1, 0, 0}
+			}
+			list = append(list, map[string]any{"pack_id": m.Header.UUID, "version": ver})
+		}
+		if len(list) == 0 {
+			continue
+		}
+		raw, _ := json.MarshalIndent(list, "", "  ")
+		os.WriteFile(cfgPath, raw, 0644)
+	}
+}
+
 // installBedrockPack extracts a .mcpack/.zip into the correct Bedrock folder
 // and registers it in the active world config.
 func installBedrockPack(serverDir string, data []byte, fname string) (string, error) {
@@ -2378,11 +2490,19 @@ func extractBedrockPack(serverDir string, data []byte, folderHint string) (strin
 		registerBedrockWorldPack(serverDir, manifest.Header.UUID, ver, isBehavior)
 	}
 
-	name := manifest.Header.Name
-	if name == "" {
-		name = folderName
+	displayName := manifest.Header.Name
+	if isLocKey(displayName) {
+		// Resolve from lang file; fall back to hint if not found
+		if resolved := readLangName(r, prefix, displayName); resolved != "" {
+			displayName = resolved
+		} else {
+			displayName = folderHint
+		}
 	}
-	return name, nil
+	if displayName == "" {
+		displayName = folderName
+	}
+	return displayName, nil
 }
 
 // installMcAddon extracts inner .mcpack files from a .mcaddon bundle
@@ -2498,11 +2618,18 @@ func extractZipSubdirPack(serverDir string, r *zip.Reader, dir string) (string, 
 	}
 	registerBedrockWorldPack(serverDir, manifest.Header.UUID, ver, isBehavior)
 
-	name := manifest.Header.Name
-	if name == "" {
-		name = dir
+	displayName := manifest.Header.Name
+	if isLocKey(displayName) {
+		if resolved := readLangName(r, prefix, displayName); resolved != "" {
+			displayName = resolved
+		} else {
+			displayName = dir
+		}
 	}
-	return name, nil
+	if displayName == "" {
+		displayName = dir
+	}
+	return displayName, nil
 }
 
 // installMcWorld extracts a .mcworld (zip) to worlds/{worldName}/ in the server directory.
@@ -2540,14 +2667,22 @@ func installMcWorld(serverDir string, data []byte, fname string) (string, error)
 		return "", err
 	}
 
+	// rootPrefix is the common top-level folder to strip when extracting
+	rootPrefix := ""
+	if len(r.File) > 0 {
+		parts := strings.SplitN(r.File[0].Name, "/", 2)
+		if len(parts) == 2 && parts[0] == worldName {
+			rootPrefix = worldName + "/"
+		}
+	}
+
 	for _, f := range r.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
 		name := f.Name
-		// Strip common root folder if present
-		if parts := strings.SplitN(name, "/", 2); len(parts) == 2 && parts[0] == worldName {
-			name = parts[1]
+		if rootPrefix != "" && strings.HasPrefix(name, rootPrefix) {
+			name = name[len(rootPrefix):]
 		}
 		if name == "" {
 			continue
@@ -2562,6 +2697,10 @@ func installMcWorld(serverDir string, data []byte, fname string) (string, error)
 		rc.Close()
 		os.WriteFile(destPath, fileData, 0644)
 	}
+
+	// Register all already-installed packs into this new world
+	syncInstalledPacksToWorld(serverDir, destDir)
+
 	return worldName, nil
 }
 
