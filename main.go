@@ -1231,6 +1231,12 @@ var reHTML = regexp.MustCompile(`<[^>]+>`)
 
 // enableBedrockExperiments patches level.dat (little-endian NBT) to enable
 // the "gametest" experiment required for Script API behavior packs.
+// experimentsToEnable lists every Bedrock experiment flag CraftPanel turns on.
+var experimentsToEnable = []string{
+	"gametest",  // stable Script API (@minecraft/server)
+	"beta_apis", // beta Script API (@minecraft/server 2.x-beta etc.)
+}
+
 func enableBedrockExperiments(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1241,55 +1247,62 @@ func enableBedrockExperiments(path string) error {
 	}
 	nbt := data[8:] // skip 4-byte version + 4-byte length header
 
-	// Helper: write a TAG_Byte entry (little-endian NBT)
-	byteTag := func(name string, val byte) []byte {
+	// nbtByteTag serialises a single TAG_Byte (id=1) entry in little-endian NBT.
+	nbtByteTag := func(name string, val byte) []byte {
 		n := []byte(name)
-		b := []byte{0x01, byte(len(n)), byte(len(n) >> 8)}
-		b = append(b, n...)
-		return append(b, val)
+		out := []byte{0x01, byte(len(n)), byte(len(n) >> 8)}
+		out = append(out, n...)
+		return append(out, val)
 	}
 
-	// Check if experiments compound already present
+	// ensureFlag sets or inserts name=1 inside the experiments compound that starts
+	// at nbt[innerStart:].  Returns the (possibly re-allocated) nbt slice.
+	ensureFlag := func(nbt []byte, innerStart int, name string) []byte {
+		tag := append([]byte{0x01, byte(len(name)), 0x00}, []byte(name)...)
+		inner := nbt[innerStart:]
+		endIdx := bytes.IndexByte(inner, 0x00) // TAG_End of experiments compound
+		if endIdx < 0 {
+			return nbt
+		}
+		gi := bytes.Index(inner[:endIdx], tag)
+		if gi >= 0 {
+			// Tag exists — make sure value is 1
+			nbt[innerStart+gi+len(tag)] = 1
+			return nbt
+		}
+		// Insert new tag just before TAG_End
+		entry := nbtByteTag(name, 1)
+		absEnd := innerStart + bytes.IndexByte(nbt[innerStart:], 0x00)
+		return append(nbt[:absEnd], append(entry, nbt[absEnd:]...)...)
+	}
+
 	expName := []byte("experiments")
 	marker := append([]byte{0x0A, byte(len(expName)), 0x00}, expName...)
 	expIdx := bytes.Index(nbt, marker)
 
 	if expIdx >= 0 {
-		// Compound exists — ensure gametest=1 inside it
-		inner := nbt[expIdx+len(marker):]
-		gtag := append([]byte{0x01, 0x08, 0x00}, []byte("gametest")...)
-		gi := bytes.Index(inner, gtag)
-		if gi >= 0 && gi+len(gtag) < len(inner) {
-			if inner[gi+len(gtag)] == 1 {
-				return nil // already enabled
-			}
-			// Patch in place
-			nbt[expIdx+len(marker)+gi+len(gtag)] = 1
-		} else {
-			// Insert gametest tag before TAG_End of experiments compound
-			endIdx := bytes.IndexByte(inner, 0x00)
-			if endIdx < 0 {
-				return nil
-			}
-			absEnd := expIdx + len(marker) + endIdx
-			patch := byteTag("gametest", 1)
-			nbt = append(nbt[:absEnd], append(patch, nbt[absEnd:]...)...)
+		innerStart := expIdx + len(marker)
+		for _, flag := range experimentsToEnable {
+			nbt = ensureFlag(nbt, innerStart, flag)
+			// Recalculate innerStart after possible re-allocation
+			innerStart = bytes.Index(nbt, marker) + len(marker)
 		}
 	} else {
-		// No experiments compound — insert one before root TAG_End (last byte)
+		// No experiments compound — build one from scratch before root TAG_End
 		if len(nbt) == 0 || nbt[len(nbt)-1] != 0x00 {
 			return nil
 		}
-		var exp bytes.Buffer
-		exp.Write(marker)
-		exp.Write(byteTag("experiments_ever_used", 1))
-		exp.Write(byteTag("saved_with_toggled_experiments", 1))
-		exp.Write(byteTag("gametest", 1))
-		exp.WriteByte(0x00) // TAG_End for experiments compound
-		nbt = append(nbt[:len(nbt)-1], append(exp.Bytes(), 0x00)...)
+		var compound bytes.Buffer
+		compound.Write(marker)
+		compound.Write(nbtByteTag("experiments_ever_used", 1))
+		compound.Write(nbtByteTag("saved_with_toggled_experiments", 1))
+		for _, flag := range experimentsToEnable {
+			compound.Write(nbtByteTag(flag, 1))
+		}
+		compound.WriteByte(0x00) // TAG_End for experiments compound
+		nbt = append(nbt[:len(nbt)-1], append(compound.Bytes(), 0x00)...)
 	}
 
-	// Write back with updated length in header
 	out := make([]byte, 8+len(nbt))
 	copy(out[:8], data[:8])
 	binary.LittleEndian.PutUint32(out[4:], uint32(len(nbt)))
