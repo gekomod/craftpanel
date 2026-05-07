@@ -2879,6 +2879,11 @@ func (a *App) handleWorldSelect(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "błąd zapisu server.properties: "+err.Error(), 500)
 		return
 	}
+
+	// Patch level.dat of the selected world to enable gametest experiment (Script API)
+	levelDat := filepath.Join(ms.Config.Directory, "worlds", req.World, "level.dat")
+	_ = enableBedrockExperiments(levelDat)
+
 	jsonResp(w, map[string]string{"status": "ok", "world": req.World})
 }
 
