@@ -2869,8 +2869,8 @@ func (a *App) handleWorldSelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent path traversal
-	if strings.ContainsAny(req.World, "/\\..") {
+	// Prevent path traversal — block separators and double-dot sequences only
+	if strings.ContainsAny(req.World, "/\\") || strings.Contains(req.World, "..") {
 		jsonErr(w, "nieprawidłowa nazwa świata", 400)
 		return
 	}
