@@ -1015,4 +1015,131 @@ function PanelSettingsScreen({ currentUser }) {
   );
 }
 
-window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab, PanelSettingsScreen };
+function WorldTab({ serverId }) {
+  const [worlds, setWorlds] = useState([]);
+  const [current, setCurrent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [selecting, setSelecting] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch(`/api/servers/${serverId}/worlds`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d) { setWorlds(d.worlds || []); setCurrent(d.current || ''); }
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [serverId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const select = async (name) => {
+    if (name === current) return;
+    setSelecting(name);
+    setMsg('');
+    try {
+      const r = await fetch(`/api/servers/${serverId}/worlds/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ world: name }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setCurrent(name);
+        setMsg(`✓ Aktywny świat zmieniony na „${name}". Zrestartuj serwer aby zastosować.`);
+        load();
+      } else {
+        setMsg(`✗ ${d.error || 'Błąd'}`);
+      }
+    } catch (e) { setMsg(`✗ ${e}`); }
+    setSelecting('');
+  };
+
+  return (
+    <div style={{ padding: '0 var(--pad) var(--pad)', display: 'flex', flexDirection: 'column', gap: 'var(--gap)' }}>
+      {msg && (
+        <div style={{
+          padding: '10px 16px', borderRadius: 8, fontSize: 13,
+          background: msg.startsWith('✓') ? 'var(--accent-bg)' : 'rgba(248,113,113,0.1)',
+          color: msg.startsWith('✓') ? 'var(--accent)' : 'var(--danger)',
+          border: `1px solid ${msg.startsWith('✓') ? 'var(--accent-line)' : 'rgba(248,113,113,0.25)'}`,
+        }}>{msg}</div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Wybór świata</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-3)' }}>
+            Aktywny świat: <strong style={{ color: 'var(--text-1)' }}>{current || '—'}</strong>
+            &nbsp;· zmiana wymaga restartu serwera
+          </p>
+        </div>
+        <button className="btn btn-sm" onClick={load} disabled={loading}>
+          <I2 name="refresh" size={13}/> Odśwież
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-3)', fontSize: 13 }}>Ładowanie…</div>
+      ) : worlds.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-3)', fontSize: 13 }}>
+          <I2 name="globe" size={28}/><br/><br/>
+          Brak światów w katalogu <code>worlds/</code>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {worlds.map(w => (
+            <div key={w.name} className="card" style={{
+              padding: 20,
+              border: w.active ? '1px solid var(--accent-line)' : undefined,
+              background: w.active ? 'var(--accent-bg)' : undefined,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                  background: w.active ? 'var(--accent)' : 'var(--bg-3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 22,
+                }}>🌍</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {w.name}
+                    </span>
+                    {w.active && (
+                      <span className="chip chip-online" style={{ flexShrink: 0 }}>AKTYWNY</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                    {w.size > 0 ? fmtSize(w.size) : 'nieznany rozmiar'}
+                  </div>
+                </div>
+              </div>
+
+              {!w.active && (
+                <button
+                  className="btn btn-sm btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', marginTop: 14 }}
+                  disabled={selecting === w.name}
+                  onClick={() => select(w.name)}
+                >
+                  <I2 name="globe" size={12}/>
+                  {selecting === w.name ? 'Ustawianie…' : 'Ustaw jako aktywny'}
+                </button>
+              )}
+              {w.active && (
+                <div style={{ marginTop: 14, fontSize: 12, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <I2 name="check" size={13}/> Aktualnie używany przez serwer
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+window.CraftTabs = { PlayersTab, PluginsTab, FilesTab, BackupsTab, SettingsTab, MonitoringTab, SecurityTab, PanelSettingsScreen, WorldTab };

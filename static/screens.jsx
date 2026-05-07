@@ -435,6 +435,7 @@ function ServerDetailScreen({ serverId, servers, navigate }) {
     { id: 'console', label: 'Konsola', icon: 'terminal' },
     { id: 'players', label: 'Gracze', icon: 'users', count: 9 },
     { id: 'plugins', label: 'Pluginy', icon: 'plug', count: 14 },
+    { id: 'world', label: 'Świat', icon: 'globe' },
     { id: 'files', label: 'Pliki', icon: 'folder' },
     { id: 'backups', label: 'Backupy', icon: 'archive' },
     { id: 'settings', label: 'Ustawienia', icon: 'settings' },
@@ -489,6 +490,7 @@ function ServerDetailScreen({ serverId, servers, navigate }) {
       {tab === 'console' && <ConsoleTab serverId={server.id}/>}
       {tab === 'players' && <PlayersTab serverId={server.id}/>}
       {tab === 'plugins' && <PluginsTab serverId={server.id} isBedrock={server.type === 'bedrock'}/>}
+      {tab === 'world' && <WorldTab serverId={server.id}/>}
       {tab === 'files' && <FilesTab serverId={server.id}/>}
       {tab === 'backups' && <BackupsTab serverId={server.id}/>}
       {tab === 'settings' && <SettingsTab server={server}/>}

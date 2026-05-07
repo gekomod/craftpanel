@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"crypto/tls"
@@ -1147,6 +1148,48 @@ func readServerProperties(dir string) map[string]string {
 		}
 	}
 	return props
+}
+
+// writeServerProperty updates or appends a single key=value in server.properties,
+// preserving all other lines and comments.
+func writeServerProperty(dir, key, value string) error {
+	fpath := filepath.Join(dir, "server.properties")
+	data, err := os.ReadFile(fpath)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed[0] == '#' {
+			continue
+		}
+		if idx := strings.IndexByte(trimmed, '='); idx >= 0 && trimmed[:idx] == key {
+			lines[i] = key + "=" + value
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, key+"="+value)
+	}
+	return os.WriteFile(fpath, []byte(strings.Join(lines, "\n")), 0644)
+}
+
+// dirSizeBytes returns the total byte size of all files inside a directory.
+func dirSizeBytes(root string) int64 {
+	var total int64
+	filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, e := d.Info(); e == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 func readMaxRAM(args []string) int64 {
@@ -2766,6 +2809,79 @@ func scrapeMCPEDLDownload(ctx context.Context, pageURL string) (string, error) {
 	return "", nil
 }
 
+// WorldInfo is a single entry returned by handleWorlds.
+type WorldInfo struct {
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+	Size   int64  `json:"size"`
+}
+
+func (a *App) handleWorlds(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "serwer nie znaleziony", 404)
+		return
+	}
+
+	props := readServerProperties(ms.Config.Directory)
+	current := props["level-name"]
+	if current == "" {
+		if ms.Config.IsBedrock() {
+			current = "Bedrock level"
+		} else {
+			current = "world"
+		}
+	}
+
+	worldsDir := filepath.Join(ms.Config.Directory, "worlds")
+	entries, _ := os.ReadDir(worldsDir)
+	var worlds []WorldInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		size := dirSizeBytes(filepath.Join(worldsDir, e.Name()))
+		worlds = append(worlds, WorldInfo{
+			Name:   e.Name(),
+			Active: e.Name() == current,
+			Size:   size,
+		})
+	}
+	// Also include current world even if worlds/ dir missing (Java flat layout)
+	if len(worlds) == 0 {
+		worlds = []WorldInfo{{Name: current, Active: true, Size: 0}}
+	}
+
+	jsonResp(w, map[string]any{"worlds": worlds, "current": current})
+}
+
+func (a *App) handleWorldSelect(w http.ResponseWriter, r *http.Request) {
+	ms, ok := a.get(r.PathValue("id"))
+	if !ok {
+		jsonErr(w, "serwer nie znaleziony", 404)
+		return
+	}
+	var req struct {
+		World string `json:"world"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.World == "" {
+		jsonErr(w, "brak nazwy świata", 400)
+		return
+	}
+
+	// Prevent path traversal
+	if strings.ContainsAny(req.World, "/\\..") {
+		jsonErr(w, "nieprawidłowa nazwa świata", 400)
+		return
+	}
+
+	if err := writeServerProperty(ms.Config.Directory, "level-name", req.World); err != nil {
+		jsonErr(w, "błąd zapisu server.properties: "+err.Error(), 500)
+		return
+	}
+	jsonResp(w, map[string]string{"status": "ok", "world": req.World})
+}
+
 func (a *App) handleFiles(w http.ResponseWriter, r *http.Request) {
 	ms, ok := a.get(r.PathValue("id"))
 	if !ok {
@@ -3661,6 +3777,8 @@ func main() {
 	mux.HandleFunc("GET /api/servers/{id}/plugins/search", app.authMW(app.handlePluginSearch))
 	mux.HandleFunc("POST /api/servers/{id}/plugins/install", app.authMW(app.handlePluginInstall))
 	mux.HandleFunc("POST /api/servers/{id}/plugins/upload", app.authMW(app.handlePackUpload))
+	mux.HandleFunc("GET /api/servers/{id}/worlds", app.authMW(app.handleWorlds))
+	mux.HandleFunc("POST /api/servers/{id}/worlds/select", app.authMW(app.handleWorldSelect))
 	mux.HandleFunc("GET /api/servers/{id}/files", app.authMW(app.handleFiles))
 	mux.HandleFunc("GET /api/servers/{id}/files/content", app.authMW(app.handleFileContent))
 	mux.HandleFunc("GET /api/servers/{id}/backups", app.authMW(app.handleBackups))
